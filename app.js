@@ -24,7 +24,12 @@ const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', '
 const DOW1 = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 const H = 56; // px per hour (keep in sync with --hour)
 const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
-const TYPE_LABEL = { event: 'Event', study: 'Study', habit: 'Habit' };
+const TYPE_LABEL = { event: 'Event', study: 'Study', habit: 'Habit', test: 'Test', block: 'Block' };
+const TYPE_COLOR = { event: '#3b82f6', study: '#8b5cf6', habit: '#2fb67c', test: '#ef4444', block: '#94a3b8' };
+const PALETTE = ['#3b82f6', '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f59e0b', '#2fb67c', '#14b8a6', '#94a3b8'];
+const G_EVENT_COLORS = { 1: '#a4bdfc', 2: '#7ae7bf', 3: '#dbadff', 4: '#ff887c', 5: '#fbd75b', 6: '#ffb878', 7: '#46d6db', 8: '#e1e1e1', 9: '#5484ed', 10: '#51b749', 11: '#dc2127' };
+const colorOf = it => it.color || TYPE_COLOR[it.type] || TYPE_COLOR.event;
+const gColor = e => S.settings.calColors?.[e.cal] || e.gcolor || '#f59e0b';
 
 let toastTimer;
 function toast(msg) {
@@ -41,7 +46,7 @@ const S = {
   user: null,
   items: [],
   logs: {},                // { 'YYYY-MM-DD': { done:{id:true}, skipped:{id:true}, mins:{id:n} } }
-  settings: { dayStart: 6, dayEnd: 23, calendars: ['primary'] },
+  settings: { dayStart: 6, dayEnd: 23, calendars: ['primary'], calColors: {} },
   view: 'day',
   date: todayStr(),
   gcal: {},                // { 'YYYY-MM-DD': [events] }
@@ -106,6 +111,24 @@ function streakOf(it, today) {
 }
 const checkable = it => it.type === 'habit' || it.type === 'study';
 const itemsOn = d => S.items.filter(it => occursOn(it, d));
+const shown = d => itemsOn(d).filter(i => i.type !== 'block');
+// A "goal" is a habit, or a study block tied to a test.
+const isGoal = it => it.type === 'habit' || (it.type === 'study' && !!it.testId);
+function goalStatus(d) {
+  const g = itemsOn(d).filter(i => isGoal(i) && i.rec?.type !== 'perweek' && !isSkipped(i.id, d));
+  return { total: g.length, done: g.filter(i => isDone(i.id, d)).length };
+}
+function dayStreaks() {
+  const t = todayStr(); let start = S.items.reduce((m, i) => (i.date < m ? i.date : m), t);
+  const floor = addDays(t, -800); if (start < floor) start = floor;
+  let run = 0, best = 0;
+  for (let d = start; d <= t; d = addDays(d, 1)) {
+    const g = goalStatus(d);
+    if (!g.total) continue;                      // no goals that day: neutral
+    if (g.done === g.total) { run++; best = Math.max(best, run); } else if (d !== t) run = 0;
+  }
+  return { cur: run, best };
+}
 
 function recSummary(it) {
   const r = it.rec || { type: 'none' };
@@ -230,11 +253,11 @@ async function gfetch(url, tok) {
   if (!r.ok) { const e = new Error('gcal ' + r.status); e.status = r.status; throw e; }
   return r.json();
 }
-function addGEvent(ev) {
+function addGEvent(ev, cal, base) {
   if (ev.status === 'cancelled') return;
   if (ev.attendees?.some(a => a.self && a.responseStatus === 'declined')) return;
   const title = ev.summary || '(No title)';
-  const push = (d, o) => { (S.gcal[d] ||= []).push({ title, link: ev.htmlLink, loc: ev.location || '', ...o }); };
+  const push = (d, o) => { (S.gcal[d] ||= []).push({ title, link: ev.htmlLink, loc: ev.location || '', cal, gcolor: G_EVENT_COLORS[ev.colorId] || base, ...o }); };
   if (ev.start?.date) {
     for (let d = ev.start.date, i = 0; d < ev.end.date && i < 60; d = addDays(d, 1), i++) push(d, { id: ev.id + d, allDay: true });
   } else if (ev.start?.dateTime) {
@@ -255,9 +278,11 @@ async function ensureGcal(force) {
   try {
     const cals = S.settings.calendars?.length ? S.settings.calendars : ['primary'];
     const qs = `timeMin=${encodeURIComponent(parse(from).toISOString())}&timeMax=${encodeURIComponent(parse(to).toISOString())}&singleEvents=true&orderBy=startTime&maxResults=250`;
-    const results = await Promise.all(cals.map(c => gfetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c)}/events?${qs}`, tok).then(j => j.items || [])));
+    if (!S.calList.length) { try { S.calList = (await gfetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader', tok)).items || []; } catch { /* colors fall back */ } }
+    const calBg = c => (S.calList.find(x => (c === 'primary' ? x.primary : x.id === c)) || {}).backgroundColor || '';
+    const results = await Promise.all(cals.map(c => gfetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c)}/events?${qs}`, tok).then(j => (j.items || []).map(ev => ({ ev, cal: c, base: calBg(c) })))));
     for (let d = from; d < to; d = addDays(d, 1)) S.gcal[d] = [];
-    results.flat().forEach(addGEvent);
+    results.flat().forEach(r => addGEvent(r.ev, r.cal, r.base));
     S.gcalStatus = 'ok';
   } catch (e) {
     delete S.gcalLoaded[key];
@@ -328,7 +353,7 @@ function stripHTML() {
   const ws = weekStart(S.date), t = todayStr();
   return '<div class="strip">' + Array.from({ length: 7 }, (_, i) => {
     const d = addDays(ws, i);
-    const has = itemsOn(d).length || (S.gcal[d] || []).length;
+    const has = shown(d).length || (S.gcal[d] || []).length;
     return `<button class="${d === S.date ? 'sel' : ''} ${d === t ? 'tdy' : ''} ${has ? 'has' : ''}" data-act="goto" data-d="${d}">
       <small>${DOW1[i]}</small><b>${parse(d).getDate()}</b><span class="dot"></span></button>`;
   }).join('') + '</div>';
@@ -348,19 +373,29 @@ function habitBadge(it, d) {
   return s.n >= 2 ? `<span class="badge fire">🔥 ${s.n}${s.unit}</span>` : '';
 }
 
+function cd(d) { const n = diffDays(todayStr(), d); return n === 0 ? 'today' : n === 1 ? 'tomorrow' : n === -1 ? 'yesterday' : n > 1 ? `in ${n}d` : `${-n}d ago`; }
+const shortDate = d => { const x = parse(d); return `${MONTHS[x.getMonth()].slice(0, 3)} ${x.getDate()}`; };
+function extraOf(it) {
+  const a = [];
+  if (it.type === 'study' && it.testId) { const t = S.items.find(x => x.id === it.testId); if (t) a.push(`${t.title} ${cd(t.date)}`); }
+  if (it.type === 'test' && it.score != null && it.score !== '') a.push(`${it.score}/${it.max || 100}`);
+  if (it.note) a.push(it.note);
+  return a.join(' · ');
+}
+
 function anytimeRow(it, d) {
-  const sk = isSkipped(it.id, d), done = isDone(it.id, d);
-  const r = it.rec || {};
+  const sk = isSkipped(it.id, d), done = isDone(it.id, d), r = it.rec || {};
   const met = r.type === 'perweek' && !done && weekDoneCount(it, d) >= r.times;
-  const c = it.type === 'study' ? 'var(--study)' : it.type === 'event' ? 'var(--event)' : 'var(--habit)';
+  const c = colorOf(it);
+  const sub = extraOf(it) || (r.type && r.type !== 'none' ? recSummary(it) : '');
+  const badge = checkable(it) ? habitBadge(it, d) : it.type === 'test' ? `<span class="badge">${cd(it.date)}</span>` : '';
   return `<div class="row ${sk ? 'skipped' : ''} ${met ? 'met' : ''}" data-act="open" data-id="${it.id}">
     ${checkable(it) ? `<button class="chk ${done ? 'on' : ''}" style="--c:${c}" data-act="toggle" data-id="${it.id}" aria-label="Toggle done"></button>` : `<span class="chk" style="--c:${c};border-style:dashed"></span>`}
-    <div class="t"><b>${esc(it.title)}</b>${it.note ? `<span>${esc(it.note)}</span>` : r.type && r.type !== 'none' ? `<span>${esc(recSummary(it))}</span>` : ''}</div>
-    ${checkable(it) ? habitBadge(it, d) : ''}</div>`;
+    <div class="t"><b>${esc(it.title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>${badge}</div>`;
 }
 
 function dayHTML() {
-  const d = S.date, items = itemsOn(d), gc = S.gcal[d] || [];
+  const d = S.date, items = shown(d), gc = S.gcal[d] || [];
   const anytime = items.filter(i => i.anytime || !i.start);
   const allDay = gc.filter(e => e.allDay);
   const blocks = [
@@ -368,35 +403,48 @@ function dayHTML() {
       const s = toMin(i.start); const e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? 30 : 60);
       return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.max(e, s + 15), it: i };
     }),
-    ...gc.filter(e => !e.allDay).map(e => ({ k: 'g', id: e.id, type: 'g', title: e.title, s: e.s, e: e.e })),
+    ...gc.filter(e => !e.allDay).map(e => ({ k: 'g', id: e.id, type: 'g', title: e.title, s: e.s, e: e.e, color: gColor(e) })),
   ];
+  // dimmed background blocks (sleep etc.), incl. the morning half of overnight ones
+  const bg = [];
+  S.items.forEach(it => {
+    if (it.type !== 'block' || !it.start || !it.end) return;
+    const s = toMin(it.start), e = toMin(it.end);
+    if (occursOn(it, d)) bg.push({ it, s, e: e > s ? e : 1440 });
+    if (e <= s && occursOn(it, addDays(d, -1))) bg.push({ it, s: 0, e });
+  });
   let rs = S.settings.dayStart, re = S.settings.dayEnd;
   blocks.forEach(b => { rs = Math.min(rs, Math.floor(b.s / 60)); re = Math.max(re, Math.ceil(b.e / 60)); });
+  bg.forEach(b => { if (b.s > 0) re = Math.max(re, Math.min(24, Math.ceil(b.e / 60))); });  // show the evening half of overnight blocks
   re = Math.min(24, re);
   layout(blocks);
   const hours = Array.from({ length: re - rs + 1 }, (_, i) => rs + i);
   const lines = hours.map(h => `<div class="hr" style="top:${(h - rs) * H}px"><span>${h === 24 ? '' : fmtT(h * 60)}</span></div>`).join('');
+  const bgHTML = bg.map(b => {
+    const s = Math.max(b.s, rs * 60), e = Math.min(b.e, re * 60); if (e <= s) return '';
+    return `<div class="blk block" style="--c:${colorOf(b.it)};top:${(s - rs * 60) / 60 * H}px;height:${(e - s) / 60 * H}px;left:0;right:0" data-act="open" data-id="${b.it.id}"><div class="bt"><b>${esc(b.it.title)}</b><span>${fmtRange(toMin(b.it.start), toMin(b.it.end))}</span></div></div>`;
+  }).join('');
   const blk = blocks.map(b => {
     const top = (b.s - rs * 60) / 60 * H, ht = Math.max((b.e - b.s) / 60 * H - 2, 26);
     const left = (b.col / b.cols) * 100, w = 100 / b.cols;
-    const style = `top:${top}px;height:${ht}px;left:calc(${left}% + 1px);width:calc(${w}% - 4px)`;
     const sm = ht < 40 ? ' sm' : '';
+    const style = `--c:${b.k === 'g' ? b.color : colorOf(b.it)};top:${top}px;height:${ht}px;left:calc(${left}% + 1px);width:calc(${w}% - 4px)`;
     if (b.k === 'g') return `<div class="blk g${sm}" style="${style}" data-act="gopen" data-id="${esc(b.id)}"><div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}</span></div></div>`;
-    const done = isDone(b.id, d), sk = isSkipped(b.id, d);
+    const done = isDone(b.id, d), sk = isSkipped(b.id, d), ex = extraOf(b.it);
     return `<div class="blk${sm} ${b.type} ${done ? 'done' : ''} ${sk ? 'skipped' : ''}" style="${style}" data-act="open" data-id="${b.id}">
       ${checkable(b.it) ? `<button class="chk ${done ? 'on' : ''}" data-act="toggle" data-id="${b.id}" aria-label="Toggle done"></button>` : ''}
-      <div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}${b.it.note ? ' · ' + esc(b.it.note) : ''}</span></div></div>`;
+      <div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}${ex ? ' · ' + esc(ex) : ''}</span></div></div>`;
   }).join('');
   let now = '';
   if (d === todayStr()) { const n = new Date(), m = n.getHours() * 60 + n.getMinutes(); if (m >= rs * 60 && m <= re * 60) now = `<div class="now" style="top:${(m - rs * 60) / 60 * H}px"></div>`; }
 
   const topSec = (allDay.length || anytime.length) ? `
     <div class="card" style="margin-top:4px">
-      ${allDay.map(e => `<div class="row allday" data-act="gopen" data-id="${esc(e.id)}"><div class="bar"></div><div class="t"><b>${esc(e.title)}</b><span>All day</span></div></div>`).join('')}
+      ${allDay.map(e => `<div class="row allday" data-act="gopen" data-id="${esc(e.id)}"><div class="bar" style="background:${gColor(e)}"></div><div class="t"><b>${esc(e.title)}</b><span>All day</span></div></div>`).join('')}
       ${anytime.map(i => anytimeRow(i, d)).join('')}
     </div>` : '';
   return `${stripHTML()}${bannerHTML()}${topSec}
-    <div class="tl" data-rs="${rs}" style="height:${(re - rs) * H + 8}px">${lines}<div class="lane" data-rs="${rs}">${blk}</div>${now}</div>`;
+    <div class="tl" data-rs="${rs}" style="height:${(re - rs) * H + 8}px">${lines}<div class="lane" data-rs="${rs}">${bgHTML}${blk}</div>${now}</div>`;
 }
 
 function layout(blocks) {
@@ -414,44 +462,66 @@ function layout(blocks) {
 /* ============================================================
    rendering: week + month
    ============================================================ */
-function habitCounts(d) {
-  const hs = itemsOn(d).filter(i => i.type === 'habit' && !isSkipped(i.id, d) && i.rec?.type !== 'perweek');
-  return { total: hs.length, done: hs.filter(i => isDone(i.id, d)).length };
-}
 function weekHTML() {
   const ws = weekStart(S.date), t = todayStr();
-  const out = bannerHTML() + Array.from({ length: 7 }, (_, i) => {
-    const d = addDays(ws, i), items = itemsOn(d), gc = S.gcal[d] || [];
+  const ln = (c, label, text) => `<div class="ln"><i style="background:${c}"></i><em>${label}</em>${esc(text)}</div>`;
+  return bannerHTML() + Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(ws, i), items = shown(d), gc = S.gcal[d] || [];
     const lines = [
-      ...gc.filter(e => e.allDay).map(e => ({ s: -1, html: `<div class="ln g"><i></i><em>All day</em>${esc(e.title)}</div>` })),
-      ...items.filter(i => !i.anytime && i.start && i.type !== 'habit').map(i => ({ s: toMin(i.start), html: `<div class="ln ${i.type}"><i></i><em>${fmtT(toMin(i.start))}</em>${esc(i.title)}</div>` })),
-      ...gc.filter(e => !e.allDay).map(e => ({ s: e.s, html: `<div class="ln g"><i></i><em>${fmtT(e.s)}</em>${esc(e.title)}</div>` })),
+      ...gc.filter(e => e.allDay).map(e => ({ s: -2, html: ln(gColor(e), 'All day', e.title) })),
+      ...items.filter(i => i.type !== 'habit').map(i => {
+        const any = i.anytime || !i.start;
+        return { s: any ? -1 : toMin(i.start), html: ln(colorOf(i), any ? (i.type === 'test' ? 'Test' : 'Any time') : fmtT(toMin(i.start)), i.title) };
+      }),
+      ...gc.filter(e => !e.allDay).map(e => ({ s: e.s, html: ln(gColor(e), fmtT(e.s), e.title) })),
     ].sort((a, b) => a.s - b.s).map(l => l.html);
-    const hc = habitCounts(d);
-    const habitTimed = items.filter(i => i.type === 'habit' && !i.anytime && i.start).length;
-    const hl = items.some(i => i.type === 'habit') ? `<div class="ln habit"><i></i><em>Habits</em>${hc.done}/${hc.total || items.filter(i => i.type === 'habit').length}${habitTimed ? ' · ' + habitTimed + ' timed' : ''}</div>` : '';
+    const gs = goalStatus(d);
+    const gl = gs.total ? `<div class="ln"><i style="background:var(--habit)"></i><em>Goals</em>${gs.done}/${gs.total}${gs.done === gs.total ? ' ✓' : ''}</div>` : '';
     const d_ = parse(d);
     return `<button class="wk-row ${d === t ? 'today' : ''}" data-act="goto" data-d="${d}" data-open-day="1">
       <div class="wk-day"><small>${DOW[d_.getDay()].slice(0, 3)}</small><b>${d_.getDate()}</b></div>
-      <div class="wk-list">${lines.join('') + hl || '<span class="muted">Nothing planned</span>'}</div></button>`;
+      <div class="wk-list">${lines.join('') + gl || '<span class="muted">Nothing planned</span>'}</div></button>`;
   }).join('');
-  return out;
 }
+
 function monthHTML() {
-  const first = S.date.slice(0, 8) + '01', from = weekStart(first), t = todayStr(), mon = S.date.slice(0, 7);
-  let cells = '';
+  const first = S.date.slice(0, 8) + '01', from = weekStart(first), tdy = todayStr(), mon = S.date.slice(0, 7);
+  const st = dayStreaks();
+  let mDone = 0, mDays = 0, cells = '';
   for (let i = 0; i < 42; i++) {
     const d = addDays(from, i), inMonth = d.slice(0, 7) === mon;
     if (i >= 35 && !inMonth) break;
-    const items = itemsOn(d), gc = S.gcal[d] || [], hc = habitCounts(d);
-    const dots = [gc.length ? 'var(--gcal)' : '', items.some(x => x.type === 'event') ? 'var(--event)' : '', items.some(x => x.type === 'study') ? 'var(--study)' : '']
-      .filter(Boolean).map(c => `<i style="background:${c}"></i>`).join('');
-    const mark = hc.total ? (hc.done === hc.total ? '<span class="mcheck">✓</span>' : hc.done ? '<span class="mring" style="border-color:var(--habit)"></span>' : '<span class="mring"></span>') : '';
-    cells += `<button class="mcell ${inMonth ? '' : 'out'} ${d === t ? 'today' : ''} ${d === S.date ? 'sel' : ''}" data-act="goto" data-d="${d}" data-open-day="1">
+    const items = shown(d), gc = S.gcal[d] || [], gs = goalStatus(d);
+    const all = gs.total > 0 && gs.done === gs.total;
+    if (inMonth && d <= tdy && gs.total) { mDays++; if (all) mDone++; }
+    const dots = [
+      gc.length ? gColor(gc[0]) : '',
+      items.some(x => x.type === 'event') ? TYPE_COLOR.event : '',
+      items.some(x => x.type === 'study') ? TYPE_COLOR.study : '',
+      items.some(x => x.type === 'test') ? TYPE_COLOR.test : '',
+    ].filter(Boolean).map(c => `<i style="background:${c}"></i>`).join('');
+    const mark = all ? '<span class="mcheck">✓</span>' : gs.total ? `<span class="mring" style="--p:${Math.round(gs.done / gs.total * 100)}%"></span>` : '';
+    cells += `<button class="mcell ${inMonth ? '' : 'out'} ${d === tdy ? 'today' : ''} ${d === S.date ? 'sel' : ''} ${all ? 'full' : ''}" data-act="goto" data-d="${d}" data-open-day="1">
       <b>${parse(d).getDate()}</b><span class="mdots">${dots}</span>${mark}</button>`;
   }
-  return `${bannerHTML()}<div class="mgrid">${DOW1.map(x => `<div class="mdow">${x}</div>`).join('')}${cells}</div>
-    <p class="hint" style="margin-top:14px"><span style="color:var(--habit)">●</span> habits &nbsp;<span style="color:var(--event)">●</span> events &nbsp;<span style="color:var(--study)">●</span> study &nbsp;<span style="color:var(--gcal)">●</span> Google</p>`;
+  const tests = S.items.filter(i => i.type === 'test');
+  const up = tests.filter(x => x.date >= tdy).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const past = tests.filter(x => x.date < tdy).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
+  const scored = tests.filter(x => x.score != null && x.score !== '');
+  const avg = scored.length ? Math.round(scored.reduce((a, x) => a + (x.score / (x.max || 100)) * 100, 0) / scored.length) : null;
+  const testRow = x => {
+    const has = x.score != null && x.score !== '';
+    const badge = has ? `${x.score}/${x.max || 100} · ${Math.round(x.score / (x.max || 100) * 100)}%` : x.date < tdy ? 'Add score' : '';
+    return `<div class="row" data-act="open" data-id="${x.id}"><span class="chk" style="--c:${colorOf(x)};border-style:dashed"></span>
+      <div class="t"><b>${esc(x.title)}</b><span>${shortDate(x.date)} · ${cd(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</span></div>
+      <span class="badge" ${has ? '' : 'style="color:var(--accent)"'}>${badge}</span></div>`;
+  };
+  return `${bannerHTML()}
+    <div class="card streakcard"><div><b>🔥 ${st.cur}</b><span>day streak</span></div><div><b>${st.best}</b><span>best</span></div><div><b>${mDone}/${mDays}</b><span>goal days</span></div></div>
+    <div class="mgrid">${DOW1.map(x => `<div class="mdow">${x}</div>`).join('')}${cells}</div>
+    <div class="sec-title">Tests${avg != null ? ` · avg ${avg}%` : ''}</div>
+    ${up.length + past.length ? `<div class="card">${up.map(testRow).join('')}${past.map(testRow).join('')}</div>` : '<p class="hint">Tap + and choose Test to add exams and track scores. Study blocks tied to a test count as goals.</p>'}
+    <p class="hint" style="margin-top:12px"><span style="color:var(--habit)">●</span> goals met &nbsp;<span style="color:var(--event)">●</span> events &nbsp;<span style="color:var(--study)">●</span> study &nbsp;<span style="color:var(--test,#ef4444)">●</span> test</p>`;
 }
 
 /* ============================================================
@@ -463,7 +533,7 @@ function newDraft(o = {}) {
     id: o.id || uid(), type, title: o.title || '', note: o.note || '', date: o.date || S.date,
     start: o.start ?? '', end: o.end ?? '', anytime: o.anytime ?? (type === 'habit' && !o.start),
     rec: o.rec || (type === 'habit' ? { type: 'weekdays', days: [0, 1, 2, 3, 4, 5, 6], every: 1, unit: 'day', dom: 1, times: 3 } : { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }),
-    active: o.active ?? true,
+    active: o.active ?? true, color: null, testId: '', score: '', max: 100,
   };
 }
 function openAdd(start) {
@@ -474,7 +544,8 @@ function openAdd(start) {
 function openEdit(id) {
   const it = S.items.find(x => x.id === id); if (!it) return;
   const d = clean(it); d.rec = { type: 'none', days: [], every: 1, unit: 'day', dom: parse(it.date).getDate(), times: 3, ...(it.rec || {}) };
-  if (!d.start) { d.start = '09:00'; d.end = '10:00'; }
+  d.color = it.color || null; d.testId = it.testId || ''; d.score = it.score ?? ''; d.max = it.max || 100;
+  if (!d.start) { d.start = d.type === 'block' ? '23:00' : '09:00'; d.end = d.type === 'block' ? '07:00' : '10:00'; }
   S.sheet = { kind: 'item', draft: d, editing: true }; renderSheet();
 }
 function closeSheet() { S.sheet = null; renderSheet(); render(); }
@@ -483,7 +554,8 @@ function onOff(on, f) { return `<button class="sw ${on ? 'on' : ''}" data-act="s
 
 function itemSheetHTML() {
   const { draft: D, editing } = S.sheet, r = D.rec, d = S.date;
-  const ph = D.type === 'study' ? 'Class (e.g. Biochem)' : D.type === 'habit' ? 'Habit (e.g. Workout)' : 'Title (e.g. Dinner)';
+  const ph = { study: 'Class (e.g. Biochem)', habit: 'Habit (e.g. Workout)', test: 'Test (e.g. Biochem midterm)', block: 'Sleep', event: 'Title (e.g. Dinner)' }[D.type];
+  const notePh = { study: 'What I’ll cover (e.g. Ch. 5, problems 1–10)', test: 'Topics covered', block: 'Notes', event: 'Notes' }[D.type];
   const recOpts = [['none', 'Never'], ['weekdays', 'Specific weekdays'], ['interval', 'Every N days/weeks/months'], ['monthly', 'Monthly on a day'], ['perweek', 'X times a week']];
   let recSub = '';
   if (r.type === 'weekdays') recSub = `<div class="fr stack"><div class="dows">${DOW1.map((x, i) => `<button class="${(r.days || []).includes(i) ? 'on' : ''}" data-act="dow" data-v="${i}">${x}</button>`).join('')}</div></div>`;
@@ -501,24 +573,37 @@ function itemSheetHTML() {
       <div class="fr"><span class="muted">${logged ? `Logged today: ${logged} min` : 'Optional stopwatch. Nothing is logged unless you add it.'}</span>
       <button data-act="sw-log" style="color:var(--accent);font-weight:650">Add to today</button></div></div>` : '';
 
+  const tests = S.items.filter(i => i.type === 'test').sort((a, b) => (a.date < b.date ? -1 : 1));
+  const testPick = D.type === 'study' ? `<div class="f"><div class="fr"><label>For test</label><select data-f="testId"><option value="">None</option>${tests.map(t => `<option value="${t.id}" ${D.testId === t.id ? 'selected' : ''}>${esc(t.title)} · ${shortDate(t.date)}</option>`).join('')}</select></div></div>
+    <p class="hint">${tests.length ? 'Study blocks tied to a test count toward your daily goals and streak.' : 'Add a Test first (tap + → Test), then tie study blocks to it.'}</p>` : '';
+  const scoreCard = D.type === 'test' ? `<div class="f"><div class="fr"><label>Score</label><span><input type="number" step="any" data-raw="1" data-f="score" placeholder="—" value="${D.score}"> <span class="muted">/</span> <input type="number" step="any" data-raw="1" data-f="max" value="${D.max}"></span></div></div>
+    <p class="hint">Add your score after the test. It shows in the Month tab.</p>` : '';
+  const showTimes = D.type === 'block' || !D.anytime;
+  const cur = D.color || '';
+  const colorCard = `<div class="f"><div class="fr stack"><label>Color</label><div class="swatches">
+      <button class="swc auto ${!cur ? 'on' : ''}" style="--c:${TYPE_COLOR[D.type]}" data-act="color" data-v="" aria-label="Default color"></button>
+      ${PALETTE.map(c => `<button class="swc ${cur === c ? 'on' : ''}" style="--c:${c}" data-act="color" data-v="${c}" aria-label="${c}"></button>`).join('')}</div></div></div>`;
+
   return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
     <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>${editing ? 'Edit' : 'New'}</b><button class="link r save" data-act="save">Save</button></div>
     <div class="sh-body">
-      <div class="seg" style="margin:0 0 12px">${['event', 'study', 'habit'].map(t => `<button class="${D.type === t ? 'on' : ''}" data-act="type" data-v="${t}">${TYPE_LABEL[t]}</button>`).join('')}</div>
+      <div class="seg" style="margin:0 0 12px">${['event', 'study', 'habit', 'test', 'block'].map(t => `<button class="${D.type === t ? 'on' : ''}" data-act="type" data-v="${t}">${TYPE_LABEL[t]}</button>`).join('')}</div>
       <div class="f"><input type="text" data-f="title" placeholder="${ph}" value="${esc(D.title)}" autocomplete="off">
-        ${D.type !== 'habit' ? `<textarea data-f="note" placeholder="${D.type === 'study' ? 'What I’ll cover (e.g. Ch. 5, problems 1–10)' : 'Notes'}">${esc(D.note)}</textarea>` : ''}</div>
-      ${stopwatch}
+        ${D.type !== 'habit' ? `<textarea data-f="note" placeholder="${notePh}">${esc(D.note)}</textarea>` : ''}</div>
+      ${D.type === 'block' ? '<p class="hint">Dimmed background time, like sleep or work. If the end is earlier than the start, it runs overnight.</p>' : ''}
+      ${stopwatch}${testPick}${scoreCard}
       <div class="f">
-        <div class="fr"><label>${r.type === 'none' ? 'Date' : 'Starts'}</label><input type="date" data-f="date" value="${D.date}"></div>
-        <div class="fr"><label>Specific time</label>${onOff(!D.anytime, 'timed')}</div>
-        ${D.anytime ? '' : `<div class="fr"><label>Start</label><input type="time" data-f="start" value="${D.start}"></div>
-        <div class="fr"><label>End</label><input type="time" data-f="end" value="${D.end}"></div>`}
-        <div class="fr"><label>Repeat</label><select data-f="rec.type">${recOpts.map(([v, l]) => `<option value="${v}" ${r.type === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div class="fr"><label>${r.type === 'none' || D.type === 'test' ? 'Date' : 'Starts'}</label><input type="date" data-f="date" value="${D.date}"></div>
+        ${D.type === 'block' ? '' : `<div class="fr"><label>Specific time</label>${onOff(!D.anytime, 'timed')}</div>`}
+        ${showTimes ? `<div class="fr"><label>Start</label><input type="time" data-f="start" value="${D.start}"></div>
+        <div class="fr"><label>End</label><input type="time" data-f="end" value="${D.end}"></div>` : ''}
+        ${D.type === 'test' ? '' : `<div class="fr"><label>Repeat</label><select data-f="rec.type">${recOpts.map(([v, l]) => `<option value="${v}" ${r.type === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         ${recSub}
-        ${r.type !== 'none' ? `<div class="fr"><label>Active</label>${onOff(D.active, 'active')}</div>` : ''}
+        ${r.type !== 'none' ? `<div class="fr"><label>Active</label>${onOff(D.active, 'active')}</div>` : ''}`}
       </div>
+      ${colorCard}
       ${editing && checkable(D) && occursToday ? `<button class="btn" data-act="skip">${isSkipped(D.id, d) ? 'Unskip today' : 'Skip today (keeps streak)'}</button>` : ''}
-      ${r.type !== 'none' && editing ? '<p class="hint">Edits apply to the whole series.</p>' : ''}
+      ${r.type !== 'none' && editing && D.type !== 'test' ? '<p class="hint">Edits apply to the whole series.</p>' : ''}
       ${editing ? '<button class="btn danger" data-act="delete">Delete</button>' : ''}
     </div></div>`;
 }
@@ -529,7 +614,7 @@ function settingsSheetHTML() {
   const sel = S.settings.calendars?.length ? S.settings.calendars : ['primary'];
   const cal = cloud ? `<div class="sec-title">Google Calendar</div><div class="f">
       <div class="fr"><span>${gToken() ? 'Connected' : 'Needs reconnect'}</span><button data-act="reconnect" style="color:var(--accent);font-weight:650">${gToken() ? 'Refresh' : 'Reconnect'}</button></div>
-      ${S.calList.length ? S.calList.map(c => `<div class="fr"><label>${esc(c.summaryOverride || c.summary)}</label><button class="sw ${sel.includes(c.id) || (c.primary && sel.includes('primary')) ? 'on' : ''}" data-act="cal" data-id="${esc(c.primary ? 'primary' : c.id)}"></button></div>`).join('') : '<div class="fr"><span class="muted">Choose which calendars to show…</span><button data-act="loadcals" style="color:var(--accent);font-weight:650">Load</button></div>'}
+      ${S.calList.length ? S.calList.map(c => { const key = c.primary ? 'primary' : c.id; return `<div class="fr"><label>${esc(c.summaryOverride || c.summary)}</label><span class="calctl"><input type="color" class="cc" data-f="calcolor" data-id="${esc(key)}" value="${esc(S.settings.calColors?.[key] || c.backgroundColor || '#f59e0b')}"><button class="sw ${sel.includes(c.id) || (c.primary && sel.includes('primary')) ? 'on' : ''}" data-act="cal" data-id="${esc(key)}"></button></span></div>`; }).join('') + (Object.keys(S.settings.calColors || {}).length ? '<div class="fr"><span class="muted">Custom colors in use</span><button data-act="calreset" style="color:var(--accent);font-weight:650">Use Google’s colors</button></div>' : '') : '<div class="fr"><span class="muted">Choose which calendars to show…</span><button data-act="loadcals" style="color:var(--accent);font-weight:650">Load</button></div>'}
     </div>` : `<div class="sec-title">Preview mode</div><p class="hint">Data stays on this device. Google sign-in and Calendar sync turn on once Firebase is configured.</p>`;
   const rec = S.items.filter(i => i.rec && i.rec.type !== 'none');
   return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
@@ -575,9 +660,18 @@ function setPath(obj, path, val) { const k = path.split('.'); let o = obj; while
 
 function saveDraft() {
   const D = S.sheet.draft;
+  if (D.type === 'block' && !D.title.trim()) D.title = 'Sleep';
   if (!D.title.trim()) { toast('Add a title'); return false; }
-  if (!D.anytime && D.start && D.end && toMin(D.end) <= toMin(D.start)) { toast('End must be after start'); return false; }
-  const it = { id: D.id, type: D.type, title: D.title.trim(), note: (D.note || '').trim(), date: D.date, start: D.anytime ? '' : D.start, end: D.anytime ? '' : D.end, anytime: D.anytime, rec: D.rec, active: D.active };
+  const anytime = D.type === 'block' ? false : D.anytime;
+  if (!anytime && D.start && D.end && D.type !== 'block' && toMin(D.end) <= toMin(D.start)) { toast('End must be after start'); return false; }
+  const it = {
+    id: D.id, type: D.type, title: D.title.trim(), note: (D.note || '').trim(), date: D.date,
+    start: anytime ? '' : D.start, end: anytime ? '' : D.end, anytime, rec: D.rec, active: D.active,
+    color: D.color || '', testId: D.type === 'study' ? (D.testId || '') : '',
+    score: D.type === 'test' && D.score !== '' && D.score != null ? Number(D.score) : null,
+    max: D.type === 'test' ? (Number(D.max) || 100) : null,
+  };
+  if (it.type === 'test') { it.rec = { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }; it.active = true; }
   if (it.rec.type === 'none') it.active = true;
   if (it.rec.type === 'weekdays' && !(it.rec.days || []).length) { toast('Pick at least one weekday'); return false; }
   DB.saveItem(it); return true;
@@ -609,15 +703,25 @@ document.addEventListener('click', e => {
       case 'gopen': { const ev = (S.gcal[S.date] || []).find(x => x.id === id); if (ev) { S.sheet = { kind: 'g', ev }; renderSheet(); } break; }
       case 'close': if (S.sheet?.kind === 'item' && S.sw.running && S.sw.id === S.sheet.draft.id) { /* keep running */ } S.sheet = null; renderSheet(); render(); break;
       case 'save': if (saveDraft()) closeSheet(); break;
-      case 'delete': if (confirm('Delete this item?')) { DB.delItem(S.sheet.draft.id); closeSheet(); } break;
+      case 'delete': if (confirm('Delete this item?')) {
+        const D = S.sheet.draft;
+        if (D.type === 'test') S.items.filter(x => x.testId === D.id).forEach(x => DB.saveItem({ ...x, testId: '' }));
+        DB.delItem(D.id); closeSheet();
+      } break;
+      case 'color': S.sheet.draft.color = t.dataset.v || null; renderSheet(); break;
+      case 'calreset': S.settings.calColors = {}; DB.saveSettings(); renderSheet(); render(); break;
       case 'skip': toggleSkip(S.sheet.draft.id, S.date); renderSheet(); render(); break;
       case 'type': {
-        const D = S.sheet.draft, prevType = D.type; D.type = t.dataset.v;
-        if (!S.sheet.editing && D.rec.type === 'none' && D.type === 'habit' && prevType !== 'habit') D.rec.type = 'weekdays', D.rec.days = [0, 1, 2, 3, 4, 5, 6];
-        if (!S.sheet.editing && D.type !== 'habit' && prevType === 'habit' && D.rec.type === 'weekdays' && D.rec.days.length === 7) D.rec.type = 'none';
-        if (!S.sheet.editing && prevType !== D.type && !S.sheet.slotPicked) {
-          D.anytime = D.type === 'habit';
-          if (!D.anytime && !D.start) D.start = '18:00', D.end = '19:00';
+        const D = S.sheet.draft, prev = D.type; D.type = t.dataset.v;
+        if (!S.sheet.editing && prev !== D.type) {
+          const r = D.rec, recurringDefault = D.type === 'habit' || D.type === 'block';
+          if (recurringDefault && r.type === 'none') { r.type = 'weekdays'; r.days = [0, 1, 2, 3, 4, 5, 6]; }
+          if (!recurringDefault && r.type === 'weekdays' && (r.days || []).length === 7) r.type = 'none';
+          if (!S.sheet.slotPicked) {
+            D.anytime = D.type === 'habit' || D.type === 'test';
+            if (D.type === 'block') { D.anytime = false; D.start = '23:00'; D.end = '07:00'; }
+            else if (!D.anytime && (!D.start || D.start === '23:00')) { D.start = '18:00'; D.end = '19:00'; }
+          }
         }
         renderSheet(); break;
       }
@@ -672,16 +776,21 @@ document.addEventListener('change', onField);
 function onField(e) {
   const el = e.target.closest('[data-f]'); if (!el || el.tagName === 'BUTTON') return;
   const f = el.dataset.f;
+  if (f === 'calcolor') {
+    S.settings.calColors = { ...(S.settings.calColors || {}), [el.dataset.id]: el.value };
+    DB.saveSettings(); if (e.type === 'change') { renderSheet(); render(); } return;
+  }
   if (f.startsWith('set.')) {
     S.settings[f.slice(4)] = +el.value;
     if (S.settings.dayEnd <= S.settings.dayStart) S.settings.dayEnd = Math.min(24, S.settings.dayStart + 1);
     DB.saveSettings(); if (e.type === 'change') { renderSheet(); render(); } return;
   }
   const D = S.sheet?.draft; if (!D) return;
-  let val = el.value; if (el.type === 'number') val = Math.max(+el.min || 1, Math.min(+el.max || 99, parseInt(val, 10) || 1));
+  let val = el.value; if (el.type === 'number' && el.dataset.raw === undefined) val = Math.max(+el.min || 1, Math.min(+el.max || 99, parseInt(val, 10) || 1));
   setPath(D, f, val);
   if (e.type === 'change' && (f === 'rec.type' || f === 'rec.every')) {
     if (f === 'rec.type' && val === 'monthly') D.rec.dom = parse(D.date).getDate();
+    if (f === 'rec.type' && val === 'weekdays' && !(D.rec.days || []).length) D.rec.days = [parse(D.date).getDay()];
     renderSheet();
   }
 }
