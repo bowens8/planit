@@ -115,7 +115,8 @@ const shown = d => itemsOn(d).filter(i => i.type !== 'block');
 // A "goal" is a habit, or a study block tied to a test.
 const isGoal = it => it.type === 'habit' || (it.type === 'study' && !!it.testId);
 function goalStatus(d) {
-  const g = itemsOn(d).filter(i => isGoal(i) && i.rec?.type !== 'perweek' && !isSkipped(i.id, d));
+  const expired = i => { if (i.type !== 'study' || !i.testId) return false; const t = S.items.find(x => x.id === i.testId); return !t || t.date < d; };  // study goals end with their test
+  const g = itemsOn(d).filter(i => isGoal(i) && !expired(i) && i.rec?.type !== 'perweek' && !isSkipped(i.id, d));
   return { total: g.length, done: g.filter(i => isDone(i.id, d)).length };
 }
 function dayStreaks() {
@@ -310,7 +311,7 @@ function render() {
     return;
   }
   const prev = $('#main'); const keep = prev ? prev.scrollTop : 0;
-  const body = S.view === 'day' ? dayHTML() : S.view === 'week' ? weekHTML() : monthHTML();
+  const body = S.view === 'day' ? dayHTML() : S.view === 'week' ? weekHTML() : S.view === 'progress' ? progressHTML() : monthHTML();
   app.innerHTML = headerHTML() + `<main id="main">${body}</main><button class="fab" data-act="add" aria-label="Add">+</button>`;
   const main = $('#main');
   if (S.view === 'day' && S.scrollToNow) {
@@ -332,18 +333,19 @@ function headerHTML() {
     const a = parse(weekStart(S.date)), b = parse(addDays(weekStart(S.date), 6));
     h1 = weekStart(S.date) === weekStart(t) ? 'This week' : 'Week';
     sub = a.getMonth() === b.getMonth() ? `${MONTHS[a.getMonth()]} ${a.getDate()} – ${b.getDate()}` : `${MONTHS[a.getMonth()].slice(0, 3)} ${a.getDate()} – ${MONTHS[b.getMonth()].slice(0, 3)} ${b.getDate()}`;
-  } else { h1 = MONTHS[d.getMonth()]; sub = String(d.getFullYear()); }
-  const atToday = S.view === 'day' ? S.date === t : S.view === 'week' ? weekStart(S.date) === weekStart(t) : S.date.slice(0, 7) === t.slice(0, 7);
+  } else if (S.view === 'progress') { h1 = 'Progress'; sub = 'Tests and study'; }
+  else { h1 = MONTHS[d.getMonth()]; sub = String(d.getFullYear()); }
+  const prog = S.view === 'progress';
+  const atToday = prog || (S.view === 'day' ? S.date === t : S.view === 'week' ? weekStart(S.date) === weekStart(t) : S.date.slice(0, 7) === t.slice(0, 7));
   const initial = esc((S.user?.displayName || S.user?.email || 'B').trim()[0]?.toUpperCase() || 'B');
   return `<header class="top">
     <div><h1>${h1}</h1><p>${sub}</p></div>
     <div class="top-actions">
       ${atToday ? '' : '<button class="pill" data-act="today">Today</button>'}
-      <button class="ico" data-act="nav" data-n="-1" aria-label="Previous">‹</button>
-      <button class="ico" data-act="nav" data-n="1" aria-label="Next">›</button>
+      ${prog ? '' : '<button class="ico" data-act="nav" data-n="-1" aria-label="Previous">‹</button><button class="ico" data-act="nav" data-n="1" aria-label="Next">›</button>'}
       <button class="avatar" data-act="settings" aria-label="Settings">${initial}</button>
     </div></header>
-    <div class="seg">${['day', 'week', 'month'].map(v => `<button class="${S.view === v ? 'on' : ''}" data-act="view" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>`;
+    <div class="seg">${['day', 'week', 'month', 'progress'].map(v => `<button class="${S.view === v ? 'on' : ''}" data-act="view" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>`;
 }
 
 /* ============================================================
@@ -504,24 +506,60 @@ function monthHTML() {
     cells += `<button class="mcell ${inMonth ? '' : 'out'} ${d === tdy ? 'today' : ''} ${d === S.date ? 'sel' : ''} ${all ? 'full' : ''}" data-act="goto" data-d="${d}" data-open-day="1">
       <b>${parse(d).getDate()}</b><span class="mdots">${dots}</span>${mark}</button>`;
   }
-  const tests = S.items.filter(i => i.type === 'test');
-  const up = tests.filter(x => x.date >= tdy).sort((a, b) => (a.date < b.date ? -1 : 1));
-  const past = tests.filter(x => x.date < tdy).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5);
-  const scored = tests.filter(x => x.score != null && x.score !== '');
-  const avg = scored.length ? Math.round(scored.reduce((a, x) => a + (x.score / (x.max || 100)) * 100, 0) / scored.length) : null;
-  const testRow = x => {
-    const has = x.score != null && x.score !== '';
-    const badge = has ? `${x.score}/${x.max || 100} · ${Math.round(x.score / (x.max || 100) * 100)}%` : x.date < tdy ? 'Add score' : '';
-    return `<div class="row" data-act="open" data-id="${x.id}"><span class="chk" style="--c:${colorOf(x)};border-style:dashed"></span>
-      <div class="t"><b>${esc(x.title)}</b><span>${shortDate(x.date)} · ${cd(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</span></div>
-      <span class="badge" ${has ? '' : 'style="color:var(--accent)"'}>${badge}</span></div>`;
-  };
   return `${bannerHTML()}
     <div class="card streakcard"><div><b>🔥 ${st.cur}</b><span>day streak</span></div><div><b>${st.best}</b><span>best</span></div><div><b>${mDone}/${mDays}</b><span>goal days</span></div></div>
     <div class="mgrid">${DOW1.map(x => `<div class="mdow">${x}</div>`).join('')}${cells}</div>
-    <div class="sec-title">Tests${avg != null ? ` · avg ${avg}%` : ''}</div>
-    ${up.length + past.length ? `<div class="card">${up.map(testRow).join('')}${past.map(testRow).join('')}</div>` : '<p class="hint">Tap + and choose Test to add exams and track scores. Study blocks tied to a test count as goals.</p>'}
     <p class="hint" style="margin-top:12px"><span style="color:var(--habit)">●</span> goals met &nbsp;<span style="color:var(--event)">●</span> events &nbsp;<span style="color:var(--study)">●</span> study &nbsp;<span style="color:var(--test,#ef4444)">●</span> test</p>`;
+}
+
+function testStats(t) {
+  const studies = S.items.filter(i => i.type === 'study' && i.testId === t.id);
+  let done = 0, planned = 0, mins = 0; const days = new Set();
+  if (studies.length) {
+    let start = studies.reduce((m, i) => (i.date < m ? i.date : m), t.date);
+    const floor = addDays(t.date, -500); if (start < floor) start = floor;
+    for (let d = start; d <= t.date; d = addDays(d, 1)) {
+      const lg = logOf(d);
+      studies.forEach(i => {
+        if (!occursOn(i, d)) return;
+        const dur = i.start && i.end ? Math.max(0, toMin(i.end) - toMin(i.start)) : 0;
+        const logged = lg.mins?.[i.id] || 0;
+        if (!lg.skipped?.[i.id] && i.rec?.type !== 'perweek') planned++;
+        if (lg.done?.[i.id]) { done++; mins += logged || dur; days.add(d); }
+        else if (logged) { mins += logged; days.add(d); }
+      });
+    }
+  }
+  return { done, planned, mins, days: days.size };
+}
+const fmtHrs = m => (m < 60 ? `${m} min` : `${(m / 60).toFixed(1).replace(/\.0$/, '')} h`);
+
+function progressHTML() {
+  const tdy = todayStr(), tests = S.items.filter(i => i.type === 'test');
+  const up = tests.filter(x => x.date >= tdy).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const past = tests.filter(x => x.date < tdy).sort((a, b) => (a.date < b.date ? 1 : -1));
+  const scored = tests.filter(x => x.score != null && x.score !== '');
+  const pct = x => Math.round(x.score / (x.max || 100) * 100);
+  const avg = scored.length ? Math.round(scored.reduce((a, x) => a + pct(x), 0) / scored.length) : null;
+  const totalMins = tests.reduce((a, x) => a + testStats(x).mins, 0);
+  const stats = x => { const st = testStats(x); return `<div class="pstats"><div><b>${st.done}${st.planned ? `/${st.planned}` : ''}</b><span>sessions</span></div><div><b>${fmtHrs(st.mins)}</b><span>studied</span></div><div><b>${st.days}</b><span>days</span></div></div>`; };
+  const upCard = x => {
+    const st = testStats(x), w = st.planned ? Math.min(100, Math.round(st.done / st.planned * 100)) : 0;
+    return `<div class="pcard" data-act="open" data-id="${x.id}">
+      <div class="ph"><div><b>${esc(x.title)}</b><span>${shortDate(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</span></div><div class="pbig" style="color:${colorOf(x)}">${cd(x.date).replace('in ', '')}</div></div>
+      <div class="pbar"><i style="width:${w}%;background:${colorOf(x)}"></i></div>${stats(x)}</div>`;
+  };
+  const pastCard = x => {
+    const has = x.score != null && x.score !== '';
+    return `<div class="pcard" data-act="open" data-id="${x.id}">
+      <div class="ph"><div><b>${esc(x.title)}</b><span>${shortDate(x.date)}${has ? ` · ${x.score}/${x.max || 100}` : ''}</span></div>
+      <div class="pbig" ${has ? '' : 'style="color:var(--accent);font-size:15px"'}>${has ? pct(x) + '%' : 'Add score'}</div></div>${stats(x)}</div>`;
+  };
+  if (!tests.length) return `${bannerHTML()}<p class="hint" style="margin-top:20px">No tests yet. Tap + → Test to add one, then tie study blocks to it with “For test”. This tab will show sessions, hours and days studied next to each score.</p>`;
+  return `${bannerHTML()}
+    <div class="card streakcard"><div><b>${tests.length}</b><span>tests</span></div><div><b>${avg != null ? avg + '%' : '–'}</b><span>avg score</span></div><div><b>${fmtHrs(totalMins)}</b><span>studied</span></div></div>
+    ${up.length ? `<div class="sec-title">Upcoming</div>${up.map(upCard).join('')}` : ''}
+    ${past.length ? `<div class="sec-title">Past</div>${past.map(pastCard).join('')}` : ''}`;
 }
 
 /* ============================================================
