@@ -161,3 +161,28 @@ main{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 14px calc(120px + env(
 
 .blk.sm{padding-top:3px;align-items:center}.blk.sm .bt span{display:none}
 .fr button{white-space:nowrap}
+
+/* ---- v2: colors, sleep blocks, streak card, tests ---- */
+:root{--test:#ef4444}
+.blk{--c:var(--event)}
+.blk.block{background:color-mix(in srgb,var(--c) 11%,transparent);border-left:3px solid color-mix(in srgb,var(--c) 38%,transparent);z-index:0;pointer-events:none;border-radius:8px}
+.blk.block .bt{pointer-events:auto}
+.blk.block .bt b{color:var(--muted);font-weight:600}
+.blk.block .bt span{color:var(--muted);opacity:.8}
+.swatches{display:flex;gap:10px;flex-wrap:wrap;padding:8px 0 4px}
+.swc{width:30px;height:30px;border-radius:50%;background:var(--c);position:relative}
+.swc.auto{background:color-mix(in srgb,var(--c) 30%,transparent);border:2px dashed var(--c)}
+.swc.on::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:2px solid var(--text)}
+.streakcard{display:flex;padding:14px 6px;margin:4px 0 12px}
+.streakcard>div{flex:1;text-align:center}
+.streakcard b{display:block;font-size:22px;font-weight:750}
+.streakcard span{font-size:12px;color:var(--muted)}
+.mcell.full{background:color-mix(in srgb,var(--habit) 22%,var(--card))}
+.mring{width:16px;height:16px;border-radius:50%;border:0;
+  background:conic-gradient(var(--habit) var(--p,0%),color-mix(in srgb,var(--habit) 24%,transparent) 0);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));
+  mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px))}
+.calctl{display:flex;align-items:center;gap:12px}
+input.cc{width:30px;height:30px;padding:0;border:0;border-radius:50%;background:none;overflow:hidden;-webkit-appearance:none;appearance:none}
+input.cc::-webkit-color-swatch-wrapper{padding:0}
+input.cc::-webkit-color-swatch{border:0;border-radius:50%}
