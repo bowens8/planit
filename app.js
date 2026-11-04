@@ -60,6 +60,8 @@ const S = {
   sw: { id: null, running: false, t0: 0, acc: 0 },
   scrollToNow: true,
   planClass: '',
+  calView: 'day',
+  vmenuOpen: false,
 };
 
 /* ============================================================
@@ -363,6 +365,7 @@ function headerHTML() {
   else if (S.view === 'plan') { h1 = 'Plan'; sub = 'Assignments, time away, classes'; }
   else { h1 = MONTHS[d.getMonth()]; sub = String(d.getFullYear()); }
   const prog = S.view === 'progress' || S.view === 'plan';
+  const isCal = ['day', 'week', 'month'].includes(S.view), calLabel = isCal ? S.view : S.calView;
   const atToday = prog || (S.view === 'day' ? S.date === t : S.view === 'week' ? weekStart(S.date) === weekStart(t) : S.date.slice(0, 7) === t.slice(0, 7));
   const initial = esc((S.user?.displayName || S.user?.email || 'B').trim()[0]?.toUpperCase() || 'B');
   return `<header class="top">
@@ -372,7 +375,11 @@ function headerHTML() {
       ${prog ? '' : '<button class="ico" data-act="nav" data-n="-1" aria-label="Previous">‹</button><button class="ico" data-act="nav" data-n="1" aria-label="Next">›</button>'}
       <button class="avatar" data-act="settings" aria-label="Settings">${initial}</button>
     </div></header>
-    <div class="seg">${['day', 'week', 'month', 'plan', 'progress'].map(v => `<button class="${S.view === v ? 'on' : ''}" data-act="view" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>`;
+    <div class="seg">
+      <div class="vmenu"><button class="${isCal ? 'on' : ''}" data-act="vmenu" aria-haspopup="true" aria-expanded="${S.vmenuOpen}">${calLabel[0].toUpperCase() + calLabel.slice(1)} <span class="chev">▾</span></button>
+        ${S.vmenuOpen ? `<div class="vpop" role="menu">${['day', 'week', 'month'].map(v => `<button class="${calLabel === v && isCal ? 'cur' : ''}" data-act="view" data-v="${v}" role="menuitem">${v[0].toUpperCase() + v.slice(1)}<i>${calLabel === v && isCal ? '✓' : ''}</i></button>`).join('')}</div>` : ''}</div>
+      ${['plan', 'progress'].map(v => `<button class="${S.view === v ? 'on' : ''}" data-act="view" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}
+    </div>`;
 }
 
 /* ============================================================
@@ -882,6 +889,7 @@ function saveDraft() {
 }
 
 document.addEventListener('click', e => {
+  if (S.vmenuOpen && !e.target.closest('.vmenu')) { S.vmenuOpen = false; render(); return; }  // tap outside just closes the menu
   const t = e.target.closest('[data-act]');
   if (t) {
     const act = t.dataset.act, id = t.dataset.id;
@@ -889,7 +897,8 @@ document.addEventListener('click', e => {
     switch (act) {
       case 'signin': Cloud.signIn(); break;
       case 'signout': Cloud.signOut().then(() => { S.sheet = null; renderSheet(); render(); }); break;
-      case 'view': S.view = t.dataset.v; S.scrollToNow = true; render(); ensureGcal(); break;
+      case 'vmenu': S.vmenuOpen = !S.vmenuOpen; render(); break;
+      case 'view': S.view = t.dataset.v; S.vmenuOpen = false; if (['day', 'week', 'month'].includes(S.view)) S.calView = S.view; S.scrollToNow = true; render(); ensureGcal(); break;
       case 'today': S.date = todayStr(); S.scrollToNow = true; render(); ensureGcal(); break;
       case 'nav': {
         const n = +t.dataset.n;
