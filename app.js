@@ -103,6 +103,10 @@ const noteOf = (it, d) => {                       // per-day note for one item: 
   return (n.t || n.b) ? { t: n.t || '', b: n.b || '' } : null;
 };
 const noteLabel = n => (n ? (n.t || n.b.split('\n')[0].slice(0, 40)) : '');
+const sessionsOf = it => it.sessions || (it.workStart ? [{ d: it.workDate || it.date, s: it.workStart }] : []);
+const sessionOn = (it, d) => sessionsOf(it).find(x => x.d === d);
+const sessMins = (it, x) => (x && x.m) || it.est || 60;
+const withSessions = (it, sessions) => { const { workStart, workDate, ...rest } = it; return { ...rest, sessions: sessions.slice().sort((a, b) => (a.d + a.s < b.d + b.s ? -1 : 1)) }; };
 const placeable = it => it.type === 'habit' || it.type === 'study';
 const placedAt = (it, d) => (placeable(it) && (it.anytime || !it.start)) ? (logOf(d).at?.[it.id] || '') : '';
 const blankLog = lg => { lg.done ||= {}; lg.skipped ||= {}; lg.mins ||= {}; return lg; };
@@ -371,7 +375,7 @@ function render() {
   const prev = $('#main'); const keep = prev ? prev.scrollTop : 0;
   const ae = document.activeElement, dnFocus = ae && ae.classList && ae.classList.contains('dnta') ? { s: ae.selectionStart, e: ae.selectionEnd } : null;
   const body = S.view === 'day' ? dayHTML() : S.view === 'week' ? weekHTML() : S.view === 'progress' ? progressHTML() : S.view === 'plan' ? planHTML() : monthHTML();
-  app.innerHTML = headerHTML() + `<main id="main">${body}</main><button class="fab" data-act="add" aria-label="Add">+</button>`;
+  app.innerHTML = headerHTML() + `<main id="main">${body}</main><button class="fab" data-act="add" aria-label="Add">+</button>${S.qt ? `<div class="qtbar" data-act="qt"><span class="qdot"></span><b class="qtt">${qtText(qtElapsed())}</b><span class="qn">${esc(qtName(S.qt.classId))}</span><button data-act="qtstop">Stop</button></div>` : ''}`;
   const main = $('#main'), viewChanged = S.lastRenderView !== S.view; S.lastRenderView = S.view;
   if (S.view === 'day' && S.scrollToNow) {
     S.scrollToNow = false;
@@ -407,6 +411,7 @@ function headerHTML() {
     <div class="top-actions">
       ${atToday ? '' : '<button class="pill" data-act="today">Today</button>'}
       ${prog ? '' : '<button class="ico" data-act="nav" data-n="-1" aria-label="Previous">‹</button><button class="ico" data-act="nav" data-n="1" aria-label="Next">›</button>'}
+      <button class="ico ${S.qt ? 'qton' : ''}" data-act="qt" aria-label="Study timer">⏱</button>
       <button class="avatar" data-act="settings" aria-label="Settings">${initial}</button>
     </div></header>
     <div class="seg">
@@ -478,7 +483,7 @@ function anytimeRow(it, d) {
 
 function trayHTML(d) {
   if (d < todayStr()) return '';
-  const list = S.items.filter(i => i.type === 'assignment' && !i.done && !i.workStart).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const list = S.items.filter(i => i.type === 'assignment' && !i.done && !sessionOn(i, d) && (i.date >= d || d === todayStr())).sort((a, b) => (a.date < b.date ? -1 : 1));
   if (!list.length) return '';
   const rows = list.map(i => {
     const cn = classById(i.classId)?.name;
@@ -490,12 +495,12 @@ function trayHTML(d) {
 function dayHTML() {
   const d = S.date, items = shown(d), gc = S.gcal[d] || [];
   const overdue = d === todayStr() ? S.items.filter(i => i.type === 'assignment' && !i.done && i.date < d) : [];
-  const schedOn = i => i.type === 'assignment' && i.workStart && i.workDate === d;
+  const schedOn = i => i.type === 'assignment' && !!sessionOn(i, d) && (!i.done || d <= todayStr());
   const sched = S.items.filter(i => schedOn(i));
   const anytime = [...overdue.filter(i => !schedOn(i)), ...items.filter(i => (i.type === 'assignment' ? !schedOn(i) : ((i.anytime || !i.start) && !placedAt(i, d))))];
   const allDay = gc.filter(e => e.allDay);
   const blocks = [
-    ...sched.map(i => { const s = toMin(i.workStart); return { k: 'app', id: i.id, type: 'assignment', title: i.title, s, e: Math.min(1440, s + (i.est || 60)), it: i, sched: true }; }),
+    ...sched.map(i => { const x = sessionOn(i, d), s = toMin(x.s); return { k: 'app', id: i.id, type: 'assignment', title: i.title, s, e: Math.min(1440, s + sessMins(i, x)), it: i, sched: true }; }),
     ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.min(1440, s + (i.est || 30)), it: i, placed: true }; }),
     ...items.filter(i => i.type !== 'assignment' && !(i.anytime || !i.start)).map(i => {
       const s = toMin(i.start); const e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? (i.est || 30) : 60);
@@ -513,6 +518,8 @@ function dayHTML() {
   });
   let rs = S.settings.dayStart, re = S.settings.dayEnd;
   blocks.forEach(b => { rs = Math.min(rs, Math.floor(b.s / 60)); re = Math.max(re, Math.ceil(b.e / 60)); });
+  const sess = (logOf(d).sessions || []).map(x => ({ ...x, s: toMin(x.start), e: Math.min(1440, toMin(x.start) + x.mins) }));
+  sess.forEach(x => { rs = Math.min(rs, Math.floor(x.s / 60)); re = Math.max(re, Math.ceil(x.e / 60)); });
   bg.forEach(b => { if (b.s > 0) re = Math.max(re, Math.min(24, Math.ceil(b.e / 60))); });  // show the evening half of overnight blocks
   re = Math.min(24, re);
   layout(blocks);
@@ -522,6 +529,7 @@ function dayHTML() {
     const s = Math.max(b.s, rs * 60), e = Math.min(b.e, re * 60); if (e <= s) return '';
     return `<div class="blk block" style="--c:${colorOf(b.it)};top:${(s - rs * 60) / 60 * H}px;height:${(e - s) / 60 * H}px;left:0;right:0" data-act="open" data-id="${b.it.id}"><div class="bt"><b>${esc(b.it.title)}</b><span>${fmtRange(toMin(b.it.start), toMin(b.it.end))}</span></div></div>`;
   }).join('');
+  const sessHTML = sess.map(x => `<div class="blk sess" style="--c:${x.classId ? (classById(x.classId)?.color || '#22a06b') : '#22a06b'};top:${(x.s - rs * 60) / 60 * H}px;height:${Math.max((x.e - x.s) / 60 * H - 2, 26)}px;left:0;right:0" data-act="delsess" data-d="${d}" data-id="${x.id}"><div class="bt"><b>✓ Studied · ${esc(qtName(x.classId))}</b><span>${fmtRange(x.s, x.e)} · ${fmtHrs(x.mins)}</span></div></div>`).join('');
   const blk = blocks.map(b => {
     const top = (b.s - rs * 60) / 60 * H, ht = Math.max((b.e - b.s) / 60 * H - 2, 26);
     const left = (b.col / b.cols) * 100, w = 100 / b.cols;
@@ -544,7 +552,7 @@ function dayHTML() {
   const dn = logOf(d).note || '';
   const noteBox = `<div class="daynote"><textarea class="dnta" data-f="daynote" rows="${dn ? Math.min(4, dn.split('\n').length + 1) : 1}" placeholder="Note for ${d === todayStr() ? 'today' : 'this day'}…" aria-label="Day note">${esc(dn)}</textarea></div>`;
   return `${stripHTML()}${bannerHTML()}${awayBanner(d)}${topSec}${trayHTML(d)}
-    <div class="tl" data-rs="${rs}" style="height:${(re - rs) * H + 8}px">${lines}<div class="lane" data-rs="${rs}">${bgHTML}${blk}</div>${now}</div>`;
+    <div class="tl" data-rs="${rs}" style="height:${(re - rs) * H + 8}px">${lines}<div class="lane" data-rs="${rs}">${bgHTML}${sessHTML}${blk}</div>${now}</div>`;
 }
 
 function layout(blocks) {
@@ -566,9 +574,9 @@ function weekHTML() {
   const ws = weekStart(S.date), t = todayStr(), WH = 34;
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = addDays(ws, i), items = shown(d).filter(i => i.inWeek !== false), gc = S.gcal[d] || [];
-    const sched = S.items.filter(i => i.type === 'assignment' && i.workStart && i.workDate === d && i.inWeek !== false);
+    const sched = S.items.filter(i => i.type === 'assignment' && sessionOn(i, d) && (!i.done || d <= t) && i.inWeek !== false);
     const blocks = [
-      ...sched.map(i => { const s = toMin(i.workStart); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + (i.est || 60)), c: colorOf(i), done: !!i.done }; }),
+      ...sched.map(i => { const x = sessionOn(i, d), s = toMin(x.s); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + sessMins(i, x)), c: colorOf(i), done: !!i.done }; }),
       ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + (i.est || 30)), c: colorOf(i), done: doneFor(i, d) }; }),
       ...items.filter(i => i.type !== 'assignment' && !(i.anytime || !i.start)).map(i => { const s = toMin(i.start), e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? (i.est || 30) : 60); return { k: 'app', id: i.id, title: i.title, s, e: Math.max(e, s + 15), c: colorOf(i), done: doneFor(i, d) }; }),
       ...gc.filter(e => !e.allDay).map(e => ({ k: 'g', id: e.id, title: e.title, s: e.s, e: e.e, c: gColor(e) })),
@@ -664,6 +672,11 @@ function testStats(t) {
       });
     }
   }
+  Object.keys(S.logs).forEach(d => (S.logs[d].sessions || []).forEach(x => {
+    if (!t.classId || x.classId !== t.classId) return;
+    const nxt = S.items.filter(i => i.type === 'test' && i.classId === t.classId && i.date >= d).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
+    if (nxt && nxt.id === t.id) { mins += x.mins; days.add(d); done++; planned++; }
+  }));
   return { done, planned, mins, days: days.size };
 }
 const fmtHrs = m => (m < 60 ? `${m} min` : `${(m / 60).toFixed(1).replace(/\.0$/, '')} h`);
@@ -747,7 +760,7 @@ function assignRow(i) {
   const late = !i.done && i.date < todayStr(), c = colorOf(i);
   return `<div class="arow ${late ? 'late' : ''} ${i.done ? 'isdone' : ''}" data-act="open" data-id="${i.id}">
     <button class="chk ${i.done ? 'on' : ''}" style="--c:${late ? 'var(--danger)' : c}" data-act="toggle" data-id="${i.id}" aria-label="Toggle done"></button>
-    <div class="amain"><b>${esc(i.title)}</b><div class="ameta">${cpill(i)}<span class="due">${dueText(i)}</span><span>&nbsp;· ~${fmtHrs(i.est || 60)}</span>${i.workStart ? `<span>&nbsp;· 📅 ${shortDate(i.workDate)} ${fmtT(toMin(i.workStart))}</span>` : ''}</div>${i.note ? `<div class="anote">${esc(i.note)}</div>` : ''}</div>
+    <div class="amain"><b>${esc(i.title)}</b><div class="ameta">${cpill(i)}<span class="due">${dueText(i)}</span><span>&nbsp;· ~${fmtHrs(i.est || 60)}</span>${(() => { const ss = sessionsOf(i).filter(x => x.d >= todayStr()).sort((a, b) => (a.d + a.s < b.d + b.s ? -1 : 1)); return ss.length ? `<span>&nbsp;· 📅 ${shortDate(ss[0].d)} ${fmtT(toMin(ss[0].s))}${ss.length > 1 ? ' +' + (ss.length - 1) : ''}</span>` : ''; })()}</div>${i.note ? `<div class="anote">${esc(i.note)}</div>` : ''}</div>
     ${!i.done ? `<button class="schedbtn" data-act="gosched" data-id="${i.id}" aria-label="Schedule">📅</button>` : ''}${assignBadge(i)}</div>`;
 }
 function planHTML() {
@@ -801,7 +814,7 @@ function newDraft(o = {}) {
     id: o.id || uid(), type, title: o.title || '', note: o.note || '', date: o.date || S.date,
     start: o.start ?? '', end: o.end ?? '', anytime: o.anytime ?? (type === 'habit' && !o.start),
     rec: o.rec || (type === 'habit' ? { type: 'weekdays', days: [0, 1, 2, 3, 4, 5, 6], every: 1, unit: 'day', dom: 1, times: 3 } : { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }),
-    active: o.active ?? true, color: null, testId: '', score: '', max: 100, classId: '', est: 60, workDate: '', workStart: '', inWeek: true, dnote: '', dnoteT: '', dnw: { 0: { t: '', b: '' }, 1: { t: '', b: '' }, 2: { t: '', b: '' }, 3: { t: '', b: '' }, 4: { t: '', b: '' }, 5: { t: '', b: '' }, 6: { t: '', b: '' } },
+    active: o.active ?? true, color: null, testId: '', score: '', max: 100, classId: '', est: 60, workDate: '', workStart: '', sessions: [], inWeek: true, dnote: '', dnoteT: '', dnw: { 0: { t: '', b: '' }, 1: { t: '', b: '' }, 2: { t: '', b: '' }, 3: { t: '', b: '' }, 4: { t: '', b: '' }, 5: { t: '', b: '' }, 6: { t: '', b: '' } },
     vstart: '', vend: '', absent: { study: true, habits: true },
   };
 }
@@ -813,7 +826,7 @@ function openAdd(start) {
 function openEdit(id) {
   const it = S.items.find(x => x.id === id); if (!it) return;
   const d = clean(it); d.rec = { type: 'none', days: [], every: 1, unit: 'day', dom: parse(it.date).getDate(), times: 3, ...(it.rec || {}) };
-  d.color = it.color || null; d.testId = it.testId || ''; d.score = it.score ?? ''; d.max = it.max || 100; d.classId = it.classId || ''; d.inWeek = it.inWeek !== false; d.est = it.est || (it.type === 'habit' ? 30 : 60); { const nn = noteOf(it, S.date); d.dnoteT = nn?.t || ''; d.dnote = nn?.b || ''; d.dnw = {}; for (let w = 0; w < 7; w++) d.dnw[w] = { t: it.dayNotes?.[w]?.t || '', b: it.dayNotes?.[w]?.b || '' }; } d.workDate = it.workDate || ''; d.workStart = it.workStart || '';
+  d.color = it.color || null; d.testId = it.testId || ''; d.score = it.score ?? ''; d.max = it.max || 100; d.classId = it.classId || ''; d.inWeek = it.inWeek !== false; d.est = it.est || (it.type === 'habit' ? 30 : 60); { const nn = noteOf(it, S.date); d.dnoteT = nn?.t || ''; d.dnote = nn?.b || ''; d.dnw = {}; for (let w = 0; w < 7; w++) d.dnw[w] = { t: it.dayNotes?.[w]?.t || '', b: it.dayNotes?.[w]?.b || '' }; } d.workDate = ''; d.workStart = ''; d.sessions = sessionsOf(it).map(x => ({ ...x }));
   if (!d.start) { d.start = d.type === 'block' ? '23:00' : '09:00'; d.end = d.type === 'block' ? '07:00' : '10:00'; }
   S.sheet = { kind: 'item', draft: d, editing: true }; renderSheet();
 }
@@ -916,10 +929,11 @@ function itemSheetHTML() {
       <textarea data-f="dnote" placeholder="${doneNow ? 'How did it go? Weights, what you covered, next time…' : 'Details to read when you tap the title…'}">${esc(D.dnote || '')}</textarea></div>
       <p class="hint" style="margin:6px 12px 8px">This note is just for ${dayLbl}. To preset one for another day, open that day and tap the item.</p></div>` : '';
   const workCard = isA ? `<div class="f"><div class="fr"><label>Estimated time</label><select data-f="est">${ests.map(m => `<option value="${m}" ${(Number(D.est) || 60) === m ? 'selected' : ''}>${fmtHrs(m)}</option>`).join('')}</select></div>
-      <div class="fr"><label>Work on it</label><input type="date" data-f="workDate" value="${D.workDate}"></div>
+      ${(D.sessions || []).slice().sort((x, y) => (x.d + x.s < y.d + y.s ? -1 : 1)).map(x => { const i = D.sessions.indexOf(x); return `<div class="fr"><span>📅 ${shortDate(x.d)} · ${fmtT(toMin(x.s))}${x.m ? ' · ' + fmtHrs(x.m) : ''}</span><button data-act="rmsess" data-i="${i}" style="color:var(--danger);font-weight:650" aria-label="Remove session">✕</button></div>`; }).join('')}
+      <div class="fr"><label>${(D.sessions || []).length ? 'Add another day' : 'Work on it'}</label><input type="date" data-f="workDate" value="${D.workDate || S.date}"></div>
       <div class="fr"><label>Starting at</label><input type="time" data-f="workStart" value="${D.workStart}"></div>
-      ${D.workStart ? '<div class="fr"><span class="muted">Scheduled on your timeline</span><button data-act="clearwork" style="color:var(--danger);font-weight:650">Clear</button></div>' : ''}</div>
-    <p class="hint">Tip: on the Day tab, hold an assignment and drag it onto the timeline.</p>` : '';
+    </div>
+    <p class="hint">Not finished? It reappears in “To schedule” each day until it’s due, so you can drag it down again.</p>` : '';
 
   return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
     <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>${editing ? 'Edit' : 'New'}</b><button class="link r save" data-act="save">Save</button></div>
@@ -1036,15 +1050,50 @@ function renderSheet() {
   if (!S.sheet) { root.innerHTML = ''; return; }
   const scroll = $('.sh-body', root)?.scrollTop || 0;
   const hadSheet = !!$('.sheet', root);
-  root.innerHTML = S.sheet.kind === 'item' ? itemSheetHTML() : S.sheet.kind === 'sp' ? spSheetHTML() : S.sheet.kind === 'settings' ? settingsSheetHTML() : gSheetHTML();
+  root.innerHTML = S.sheet.kind === 'item' ? itemSheetHTML() : S.sheet.kind === 'sp' ? spSheetHTML() : S.sheet.kind === 'qt' ? qtSheetHTML() : S.sheet.kind === 'settings' ? settingsSheetHTML() : gSheetHTML();
   if (hadSheet) { const sh = $('.sheet', root), sc = $('.scrim', root); sh.style.animation = 'none'; sh.style.transform = 'none'; sc.style.animation = 'none'; sc.style.opacity = 1; }
   const b = $('.sh-body', root); if (b) b.scrollTop = scroll;
 }
 
+/* quick study timer: tap, pick a class, stop, and the time is logged on its own */
+try { S.qt = JSON.parse(localStorage.getItem('planit.qt') || 'null'); } catch { S.qt = null; }
+const qtElapsed = () => (S.qt ? Math.max(0, Date.now() - S.qt.t0) : 0);
+const qtText = ms => { const t = Math.floor(ms / 1000), h = Math.floor(t / 3600); return `${h ? h + ':' : ''}${pad(Math.floor(t % 3600 / 60))}:${pad(t % 60)}`; };
+const qtName = id => (id ? classById(id)?.name || 'Class' : 'Study');
+function qtStart(classId) {
+  S.qt = { classId: classId || '', t0: Date.now() };
+  try { localStorage.setItem('planit.qt', JSON.stringify(S.qt)); } catch { /* ignore */ }
+  S.sheet = null; renderSheet(); render(); toast(`Timer started · ${qtName(classId)}`);
+}
+function qtStop(save) {
+  const q = S.qt; if (!q) return;
+  const mins = Math.round((Date.now() - q.t0) / 60000);
+  S.qt = null; try { localStorage.removeItem('planit.qt'); } catch { /* ignore */ }
+  S.sheet = null; renderSheet();
+  if (save && mins >= 1) {
+    const t0 = new Date(q.t0), d = ymd(t0), lg = blankLog(clean(logOf(d))); lg.sessions ||= [];
+    lg.sessions.push({ id: uid(), classId: q.classId, mins, start: fromMin(t0.getHours() * 60 + t0.getMinutes()) }); DB.saveLog(d, lg);
+    toast(`Logged ${fmtHrs(mins)} · ${qtName(q.classId)}`);
+  } else if (save) toast('Under a minute, so nothing was logged');
+  render();
+}
+function qtSheetHTML() {
+  const cls = S.settings.classes || [], q = S.qt;
+  if (q) return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
+    <div class="sh-head"><button class="link" data-act="close">Close</button><b>Study timer</b><span></span></div>
+    <div class="sh-body"><div class="f"><div class="stopwatch"><span class="time qtt">${qtText(qtElapsed())}</span><span class="muted">${esc(qtName(q.classId))}</span></div></div>
+      <button class="btn primary" data-act="qtstop">Stop and log it</button>
+      <button class="btn" data-act="qtdiscard" style="color:var(--danger)">Discard</button></div></div>`;
+  return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
+    <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>Study timer</b><span></span></div>
+    <div class="sh-body"><div class="sec-title" style="margin-top:0">Tap a class to start</div>
+      <div class="f">${cls.map(c => `<button class="qtcls" data-act="qtgo" data-id="${c.id}"><i style="background:${c.color}"></i>${esc(c.name)}</button>`).join('')}<button class="qtcls" data-act="qtgo" data-id=""><i style="background:#94a3b8"></i>No class</button></div>
+      <p class="hint">The timer keeps running in the bar at the bottom, even if you close the app. Tap Stop and the time is logged for you.${cls.length ? '' : ' Add your classes on the Plan tab to pick one here.'}</p></div></div>`;
+}
 /* stopwatch */
 const swElapsed = () => S.sw.acc + (S.sw.running ? Date.now() - S.sw.t0 : 0);
 const swText = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
-setInterval(() => { const el = $('#sw-time'); if (el && S.sw.running) el.textContent = swText(swElapsed()); }, 500);
+setInterval(() => { const el = $('#sw-time'); if (el && S.sw.running) el.textContent = swText(swElapsed()); if (S.qt) document.querySelectorAll('.qtt').forEach(x => { x.textContent = qtText(qtElapsed()); }); }, 500);
 
 /* ============================================================
    events
@@ -1082,7 +1131,7 @@ function saveDraft() {
   if (placeable(D)) it.est = Number(D.est) || (D.type === 'habit' ? 30 : 60);
   delete it.doneNote;
   if (D.type === 'habit') { const dn = {}; for (let w = 0; w < 7; w++) { const x = D.dnw?.[w]; if (x && ((x.t || '').trim() || (x.b || '').trim())) dn[w] = { t: (x.t || '').trim(), b: (x.b || '').trim() }; } if (Object.keys(dn).length) it.dayNotes = dn; }
-  if (D.type === 'assignment') { it.done = !!prev?.done; it.est = Number(D.est) || 60; it.workStart = D.workStart || ''; it.workDate = D.workStart ? (D.workDate || D.date) : ''; }
+  if (D.type === 'assignment') { it.done = !!prev?.done; it.est = Number(D.est) || 60; delete it.workStart; delete it.workDate; it.sessions = (D.sessions || []).filter(x => x.d && x.s).map(x => ({ ...x })); }
   if (it.type === 'test' || it.type === 'assignment') { it.rec = { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }; it.active = true; }
   if (it.rec.type === 'none') it.active = true;
   if (it.rec.type === 'weekdays' && !(it.rec.days || []).length) { toast('Pick at least one weekday'); return false; }
@@ -1155,7 +1204,12 @@ document.addEventListener('click', e => {
       case 'gosched': S.view = 'day'; S.calView = 'day'; S.date = todayStr(); S.trayOpen = true; S.scrollToNow = true; render(); toast('Hold the assignment and drag it onto the timeline', 4000); break;
       case 'note': { const k = id + '|' + t.dataset.d; S.openNotes[k] = !S.openNotes[k]; render(); break; }
       case 'clearat': { const lg = blankLog(clean(logOf(S.date))); if (lg.at) delete lg.at[S.sheet.draft.id]; DB.saveLog(S.date, lg); renderSheet(); render(); break; }
-      case 'clearwork': S.sheet.draft.workDate = ''; S.sheet.draft.workStart = ''; renderSheet(); break;
+      case 'qt': S.sheet = { kind: 'qt' }; renderSheet(); break;
+      case 'qtgo': qtStart(id); break;
+      case 'qtstop': qtStop(true); break;
+      case 'qtdiscard': if (confirm('Discard this timer without logging?')) qtStop(false); break;
+      case 'delsess': if (confirm('Remove this logged study session?')) { const dd = t.dataset.d, lg = blankLog(clean(logOf(dd))); lg.sessions = (lg.sessions || []).filter(x => x.id !== id); DB.saveLog(dd, lg); render(); } break;
+      case 'rmsess': S.sheet.draft.sessions.splice(+t.dataset.i, 1); renderSheet(); break;
       case 'vabs': { const D = S.sheet.draft; D.absent[t.dataset.k] = !D.absent[t.dataset.k]; renderSheet(); break; }
       case 'qadd': openAddType(t.dataset.t); break;
       case 'studyplan': openStudyPlan(id); break;
@@ -1256,7 +1310,10 @@ function onField(e) {
   if (f === 'testId' && val) { const t = S.items.find(x => x.id === val); if (t?.classId && !D.classId) D.classId = t.classId; }
   if (f === 'vstart' && D.vend < val) D.vend = val;
   if (e.type === 'change' && S.sheet.kind === 'sp' && /mins$/.test(f)) { renderSheet(); return; }
-  if (e.type === 'change' && (f === 'classId' || f === 'testId' || f === 'vstart' || f === 'workStart')) renderSheet();
+  if (e.type === 'change' && f === 'workStart' && D.workStart) {
+    const day = D.workDate || S.date; D.sessions = (D.sessions || []).filter(x => x.d !== day); D.sessions.push({ d: day, s: D.workStart }); D.workStart = ''; D.workDate = ''; renderSheet(); return;
+  }
+  if (e.type === 'change' && (f === 'classId' || f === 'testId' || f === 'vstart')) renderSheet();
   if (e.type === 'change' && (f === 'rec.type' || f === 'rec.every')) {
     if (f === 'rec.type' && val === 'monthly') D.rec.dom = parse(D.date).getDate();
     if (f === 'rec.type' && val === 'weekdays' && !(D.rec.days || []).length) D.rec.days = [parse(D.date).getDay()];
@@ -1313,7 +1370,7 @@ function dragEnd(e) {
 }
 function beginDrag(src) {
   const it = S.items.find(x => x.id === src.dataset.drag); if (!it) return;
-  DR.on = true; DR.id = it.id; DR.dur = it.est || (it.type === 'habit' ? 30 : 60); DR.start = null;
+  DR.on = true; DR.id = it.id; DR.dur = (it.type === 'assignment' ? sessMins(it, sessionOn(it, S.date)) : (it.est || (it.type === 'habit' ? 30 : 60))); DR.start = null;
   src.classList.add('dragsrc');
   const g = document.createElement('div'); g.className = 'ghost'; g.style.setProperty('--c', colorOf(it));
   g.innerHTML = `<b>${esc(it.title)}</b><span>${fmtHrs(DR.dur)}</span>`; document.body.appendChild(g); DR.ghost = g;
@@ -1344,12 +1401,12 @@ function finishDrag(cancel) {
   const it = S.items.find(x => x.id === DR.id), start = DR.start, dur = DR.dur;
   DR.on = false; DR.src = null; DR.start = null;
   if (!cancel && it && start != null && placeable(it)) { const lg = blankLog(clean(logOf(S.date))); lg.at ||= {}; lg.at[it.id] = fromMin(start); DB.saveLog(S.date, lg); toast(`${it.title} · ${fmtRange(start, start + dur)}`); }
-  else if (!cancel && it && start != null) { DB.saveItem({ ...it, workDate: S.date, workStart: fromMin(start), est: it.est || 60 }); toast(`Scheduled ${fmtRange(start, start + dur)} · ${fmtHrs(dur)}`); }
+  else if (!cancel && it && start != null) { const prevS = sessionOn(it, S.date); DB.saveItem(withSessions({ ...it, est: it.est || 60 }, [...sessionsOf(it).filter(x => x.d !== S.date), { d: S.date, s: fromMin(start), ...(prevS && prevS.m ? { m: prevS.m } : {}) }])); toast(`Scheduled ${fmtRange(start, start + dur)} · ${fmtHrs(dur)}`); }
   render();
 }
 function startResize(grip, pt) {
-  const it = S.items.find(x => x.id === grip.dataset.resize); if (!it || !it.workStart) return;
-  DR.resize = { id: it.id, y0: pt.y, d0: it.est || 60, cur: it.est || 60, blk: grip.closest('.blk'), s: toMin(it.workStart) };
+  const it = S.items.find(x => x.id === grip.dataset.resize), ss = it && sessionOn(it, S.date); if (!ss) return;
+  DR.resize = { id: it.id, y0: pt.y, d0: sessMins(it, ss), cur: sessMins(it, ss), blk: grip.closest('.blk'), s: toMin(ss.s) };
   document.body.classList.add('dragging');
 }
 function doResize(pt) {
@@ -1360,7 +1417,7 @@ function doResize(pt) {
 }
 function finishResize() {
   const R = DR.resize; DR.resize = null; document.body.classList.remove('dragging'); S.noClickUntil = Date.now() + 450;
-  const it = S.items.find(x => x.id === R.id); if (it && R.cur !== (it.est || 60)) { DB.saveItem({ ...it, est: R.cur }); toast(`Estimated ${fmtHrs(R.cur)}`); }
+  const it = S.items.find(x => x.id === R.id); if (it && R.cur !== sessMins(it, sessionOn(it, S.date))) { DB.saveItem(withSessions(it, sessionsOf(it).map(x => (x.d === S.date ? { ...x, m: R.cur } : x)))); toast(`This session: ${fmtHrs(R.cur)}`); }
   render();
 }
 ['touchstart', 'mousedown'].forEach(t => document.addEventListener(t, dragPress, { passive: false }));
