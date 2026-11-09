@@ -108,7 +108,7 @@ const sessionOn = (it, d) => sessionsOf(it).find(x => x.d === d);
 const sessMins = (it, x) => (x && x.m) || it.est || 60;
 const withSessions = (it, sessions) => { const { workStart, workDate, ...rest } = it; return { ...rest, sessions: sessions.slice().sort((a, b) => (a.d + a.s < b.d + b.s ? -1 : 1)) }; };
 const placeable = it => it.type === 'habit' || it.type === 'study';
-const placedAt = (it, d) => (placeable(it) && (it.anytime || !it.start)) ? (logOf(d).at?.[it.id] || '') : '';
+const placedAt = (it, d) => (placeable(it) && (it.anytime || !it.start || isCarry(it, d))) ? (logOf(d).at?.[it.id] || '') : '';
 const blankLog = lg => { lg.done ||= {}; lg.skipped ||= {}; lg.mins ||= {}; return lg; };
 function weekDoneCount(it, anyDay) {
   const ws = weekStart(anyDay); let n = 0;
@@ -147,7 +147,18 @@ function vacationFor(ds) {
 }
 const isPaused = (it, d) => { if (it.type !== 'study' && it.type !== 'habit') return false; const v = vacationFor(d); return !!v && (it.type === 'study' ? v.absent.study : v.absent.habits); };
 const off = (it, d) => isSkipped(it.id, d) || isPaused(it, d);
-const doneFor = (it, d) => (it.type === 'assignment' ? !!it.done : isDone(it.id, d));
+// A single-day study block you didn't finish carries over to the next days (until its test) so you can place it again.
+const isCarry = (it, d) => it.type === 'study' && !!it.date && it.date < d && (!it.rec || !it.rec.type || it.rec.type === 'none');
+const carried = d => {
+  if (d < todayStr()) return [];
+  return S.items.filter(i => {
+    if (!isCarry(i, d) || i.active === false || diffDays(i.date, d) > 21) return false;
+    if (isDone(i.id, i.date) || isSkipped(i.id, i.date)) return false;
+    const t = i.testId && S.items.find(x => x.id === i.testId);
+    return !(t && t.date < d);                         // the test has passed
+  });
+};
+const doneFor = (it, d) => (it.type === 'assignment' ? !!it.done : isCarry(it, d) ? isDone(it.id, it.date) : isDone(it.id, d));
 function awayBanner(d) {
   const v = vacationFor(d); if (!v) return '';
   const p = [v.absent.study && 'Study', v.absent.habits && 'Habits'].filter(Boolean).join(' & ');
@@ -472,7 +483,7 @@ function anytimeRow(it, d) {
   const met = r.type === 'perweek' && !done && weekDoneCount(it, d) >= r.times;
   const c = colorOf(it);
   const nt = noteOf(it, d), openN = nt && nt.b && S.openNotes[it.id + '|' + d];
-  const sub = [it.type === 'habit' ? '~' + fmtHrs(it.est || 30) : (it.type === 'study' && it.est) ? '~' + fmtHrs(it.est) : '', extraOf(it) || (r.type && r.type !== 'none' ? recSummary(it) : '')].filter(Boolean).join(' · ');
+  const sub = [isCarry(it, d) ? 'carried over from ' + DOW[parse(it.date).getDay()].slice(0, 3) : '', it.type === 'habit' ? '~' + fmtHrs(it.est || 30) : (it.type === 'study' && it.est) ? '~' + fmtHrs(it.est) : '', extraOf(it) || (r.type && r.type !== 'none' ? recSummary(it) : '')].filter(Boolean).join(' · ');
   const noteH = nt ? `<div class="ntwrap"><button class="ntchip ${openN ? 'open' : ''}" data-act="${nt.b ? 'note' : 'open'}" data-id="${it.id}" data-d="${d}">📝 ${esc(noteLabel(nt))}${nt.b ? ` <i>${openN ? '▴' : '▾'}</i>` : ''}</button></div>${openN ? `<div class="ntbody">${esc(nt.b)}</div>` : ''}` : '';
   const late = it.type === 'assignment' && !it.done && it.date < todayStr();
   const badge = it.type === 'assignment' ? assignBadge(it) : checkable(it) ? habitBadge(it, d) : it.type === 'test' ? `<span class="badge">${cd(it.date)}</span>` : '';
@@ -493,16 +504,16 @@ function trayHTML(d) {
   return `<details class="tray" ${S.trayOpen ? 'open' : ''}><summary>To schedule <em>${list.length}</em></summary><div class="card">${rows}</div><p class="hint" style="margin:6px 4px 0">Hold and drag onto the timeline to schedule.</p></details>`;
 }
 function dayHTML() {
-  const d = S.date, items = shown(d), gc = S.gcal[d] || [];
+  const d = S.date, carry = carried(d), items = [...shown(d), ...carry.filter(c => !shown(d).includes(c))], gc = S.gcal[d] || [];
   const overdue = d === todayStr() ? S.items.filter(i => i.type === 'assignment' && !i.done && i.date < d) : [];
   const schedOn = i => i.type === 'assignment' && !!sessionOn(i, d) && (!i.done || d <= todayStr());
   const sched = S.items.filter(i => schedOn(i));
-  const anytime = [...overdue.filter(i => !schedOn(i)), ...items.filter(i => (i.type === 'assignment' ? !schedOn(i) : ((i.anytime || !i.start) && !placedAt(i, d))))];
+  const anytime = [...overdue.filter(i => !schedOn(i)), ...items.filter(i => (i.type === 'assignment' ? !schedOn(i) : ((i.anytime || !i.start || isCarry(i, d)) && !placedAt(i, d))))];
   const allDay = gc.filter(e => e.allDay);
   const blocks = [
     ...sched.map(i => { const x = sessionOn(i, d), s = toMin(x.s); return { k: 'app', id: i.id, type: 'assignment', title: i.title, s, e: Math.min(1440, s + sessMins(i, x)), it: i, sched: true }; }),
     ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.min(1440, s + (i.est || 30)), it: i, placed: true }; }),
-    ...items.filter(i => i.type !== 'assignment' && !(i.anytime || !i.start)).map(i => {
+    ...items.filter(i => i.type !== 'assignment' && !isCarry(i, d) && !(i.anytime || !i.start)).map(i => {
       const s = toMin(i.start); const e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? (i.est || 30) : 60);
       return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.max(e, s + 15), it: i };
     }),
@@ -1179,7 +1190,7 @@ document.addEventListener('click', e => {
         S.scrollToNow = true; render(); ensureGcal(); break;
       case 'toggle': {
         e.stopPropagation(); const it = S.items.find(x => x.id === id);
-        if (it?.type === 'assignment') DB.saveItem({ ...it, done: !it.done }); else toggleDone(id, S.date);
+        if (it?.type === 'assignment') DB.saveItem({ ...it, done: !it.done }); else toggleDone(id, it && isCarry(it, S.date) ? it.date : S.date);
         render(); if (it && it.type !== 'assignment' && isDone(id, S.date)) toast('Done ✓  Tap it to add a note', 2600); break;
       }
       case 'add': openAdd(null); break;
