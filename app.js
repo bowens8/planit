@@ -473,12 +473,12 @@ function habitBadge(it, d) {
 
 function cd(d) { const n = diffDays(todayStr(), d); return n === 0 ? 'today' : n === 1 ? 'tomorrow' : n === -1 ? 'yesterday' : n > 1 ? `in ${n}d` : `${-n}d ago`; }
 const shortDate = d => { const x = parse(d); return `${MONTHS[x.getMonth()].slice(0, 3)} ${x.getDate()}`; };
-function extraOf(it) {
+function extraOf(it, skipNote) {
   const a = [];
   if (it.type === 'study' && it.testId) { const t = S.items.find(x => x.id === it.testId); if (t) a.push(`${t.title} ${cd(t.date)}`); }
   if (it.type === 'test' && it.score != null && it.score !== '') a.push(`${it.score}/${it.max || 100}`);
   if (it.type === 'assignment') { const c = classById(it.classId); if (c) a.push(c.name); if (it.start) a.push('due ' + (it.date === todayStr() ? '' : shortDate(it.date) + ' ') + fmtT(toMin(it.start))); }
-  if (it.note) a.push(it.note);
+  if (it.note && !skipNote) a.push(it.note);
   return a.join(' · ');
 }
 
@@ -559,10 +559,11 @@ function dayHTML() {
     const sm = ht < 40 ? ' sm' : '';
     const style = `--c:${b.k === 'g' ? b.color : colorOf(b.it)};top:${top}px;height:${ht}px;left:calc(${left}% + 1px);width:calc(${w}% - 4px)`;
     if (b.k === 'g') return `<div class="blk g${sm}" style="${style}" data-act="gopen" data-id="${esc(b.id)}"><div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}</span></div></div>`;
-    const done = b.it ? doneFor(b.it, d) : isDone(b.id, d), sk = off(b.it, d), ex = [extraOf(b.it), b.it && noteOf(b.it, d) ? '📝 ' + noteLabel(noteOf(b.it, d)) : ''].filter(Boolean).join(' · ');
+    const done = b.it ? doneFor(b.it, d) : isDone(b.id, d), sk = off(b.it, d), ex = [extraOf(b.it, true), b.it && noteOf(b.it, d) ? '📝 ' + noteLabel(noteOf(b.it, d)) : ''].filter(Boolean).join(' · ');
+    const body = [b.it?.note, noteOf(b.it, d)?.b].filter(Boolean).join('\n'), fit = Math.floor((ht - (sm ? 30 : 40)) / 14);
     return `<div class="blk${sm} ${b.type} ${done ? 'done' : ''} ${sk ? 'skipped' : ''}" style="${style}" data-act="open" data-id="${b.id}"${(b.sched || b.placed) && !done ? ` data-drag="${b.id}"` : ''}>
       ${checkable(b.it) ? `<button class="chk ${done ? 'on' : ''}" data-act="toggle" data-id="${b.id}" aria-label="Toggle done"></button>` : ''}
-      <div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}${ex ? ' · ' + esc(ex) : ''}</span></div>${b.sched ? `<i class="grip" data-resize="${b.id}"></i>` : ''}</div>`;
+      <div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}${ex ? ' · ' + esc(ex) : ''}</span>${body && fit >= 1 ? `<div class="bnote" style="-webkit-line-clamp:${fit}">${esc(body)}</div>` : ''}</div>${b.sched ? `<i class="grip" data-resize="${b.id}"></i>` : ''}</div>`;
   }).join('');
   let now = '';
   if (d === todayStr()) { const n = new Date(), m = n.getHours() * 60 + n.getMinutes(); if (m >= rs * 60 && m <= re * 60) now = `<div class="now" style="top:${(m - rs * 60) / 60 * H}px"></div>`; }
