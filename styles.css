@@ -385,3 +385,6 @@ body.dragging{overflow:hidden;-webkit-user-select:none;user-select:none}
 .blk.sess{background:color-mix(in srgb,var(--c) 14%,var(--card));border-left:4px solid var(--c);opacity:.85;z-index:0}
 
 .mchip.part{background:color-mix(in srgb,var(--habit) 16%,var(--card))}
+
+.bnote{margin-top:3px;font-size:12px;line-height:14px;font-weight:500;color:var(--muted);white-space:pre-wrap;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;word-break:break-word}
+.blk.done .bnote{opacity:.7}
