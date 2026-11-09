@@ -596,7 +596,7 @@ function layout(blocks) {
 function weekHTML() {
   const ws = weekStart(S.date), t = todayStr(), WH = 34;
   const days = Array.from({ length: 7 }, (_, i) => {
-    const d = addDays(ws, i), items = shown(d).filter(i => i.inWeek !== false), gc = S.gcal[d] || [];
+    const d = addDays(ws, i), items = [...shown(d), ...carried(d)].filter(i => i.inWeek !== false), gc = S.gcal[d] || [];
     const sched = S.items.filter(i => i.type === 'assignment' && sessionOn(i, d) && (!i.done || d <= t) && i.inWeek !== false);
     const blocks = [
       ...sched.map(i => { const x = sessionOn(i, d), s = toMin(x.s); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + sessMins(i, x)), c: colorOf(i), done: !!i.done }; }),
@@ -666,8 +666,14 @@ function monthHTML() {
       items.some(x => x.type === 'test') ? TYPE_COLOR.test : '',
       items.some(x => x.type === 'assignment') ? TYPE_COLOR.assignment : '',
     ].filter(Boolean).map(c => `<i style="background:${c}"></i>`).join('');
-    const gl = [...goalList(d), ...ns.map(x => ({ it: x, done: isDone(x.id, d), off: false })), ...asg.map(x => ({ it: x, done: !!x.done, off: false }))], shownG = gl.slice(0, 3);
-    const chipsH = shownG.map(g => `<span class="mchip ${g.done ? 'done' : ''} ${g.off ? 'off' : ''}">${esc(goalLabel(g.it))}</span>`).join('') + (gl.length > 3 ? `<span class="mmore">+${gl.length - 3}</span>` : '');
+    const gAll = goalList(d), grp = [];
+    gAll.filter(g => g.it.type === 'habit').forEach(g => grp.push({ label: goalLabel(g.it), done: g.done, off: g.off, part: false }));
+    const mk = (label, list) => { const act = list.filter(g => !g.off), dn2 = act.filter(g => g.done).length; return { label: label + (act.length > 1 ? ` ${dn2}/${act.length}` : ''), done: act.length > 0 && dn2 === act.length, off: act.length === 0, part: dn2 > 0 && dn2 < act.length }; };
+    const st2 = [...gAll.filter(g => g.it.type === 'study'), ...ns.map(x => ({ it: x, done: isDone(x.id, d), off: false }))];
+    if (st2.length) grp.push(mk('Study', st2));
+    if (asg.length) grp.push(mk(asg.length > 1 ? 'Assign' : 'Assignment', asg.map(x => ({ it: x, done: !!x.done, off: false }))));
+    const shownG = grp.slice(0, 3);
+    const chipsH = shownG.map(g => `<span class="mchip ${g.done ? 'done' : ''} ${g.part ? 'part' : ''} ${g.off ? 'off' : ''}">${esc(g.label)}</span>`).join('') + (grp.length > 3 ? `<span class="mmore">+${grp.length - 3}</span>` : '');
     cells += `<button class="mcell ${inMonth ? '' : 'out'} ${d === tdy ? 'today' : ''} ${d === S.date ? 'sel' : ''} ${all ? 'full' : ''} ${frac > 0 && !all ? 'part' : ''} ${vacationFor(d) ? 'away' : ''}" style="--p:${frac.toFixed(2)}" data-act="goto" data-d="${d}" data-open-day="1">
       <b>${parse(d).getDate()}</b><span class="mchips">${chipsH}</span><span class="mdots">${dots}</span>${vacationFor(d) ? '<em class="plane">✈</em>' : ''}</button>`;
   }
