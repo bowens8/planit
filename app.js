@@ -768,7 +768,7 @@ function progressHTML() {
   const pct = x => Math.round(x.score / (x.max || 100) * 100);
   const avg = scored.length ? Math.round(scored.reduce((a, x) => a + pct(x), 0) / scored.length) : null;
   const totalMins = tests.reduce((a, x) => a + testStats(x).mins, 0);
-  const stats = x => { const st = testStats(x); return `<div class="pstats"><div><b>${st.done}${st.planned ? `/${st.planned}` : ''}</b><span>sessions</span></div><div><b>${fmtHrs(st.mins)}</b><span>studied</span></div><div><b>${st.days}</b><span>days</span></div></div>`; };
+  const stats = x => { const st = testStats(x); return `<div class="pstats" data-act="sthist" data-id="${x.id}"><div><b>${st.done}${st.planned ? `/${st.planned}` : ''}</b><span>sessions</span></div><div><b>${fmtHrs(st.mins)}</b><span>studied</span></div><div><b>${st.days}</b><span>days</span></div></div>`; };
   const upCard = x => {
     const st = testStats(x), w = st.planned ? Math.min(100, Math.round(st.done / st.planned * 100)) : 0;
     return `<div class="pcard" data-act="open" data-id="${x.id}">
@@ -1086,7 +1086,7 @@ function renderSheet() {
   if (!S.sheet) { root.innerHTML = ''; return; }
   const scroll = $('.sh-body', root)?.scrollTop || 0;
   const hadSheet = !!$('.sheet', root);
-  root.innerHTML = S.sheet.kind === 'item' ? itemSheetHTML() : S.sheet.kind === 'sp' ? spSheetHTML() : S.sheet.kind === 'qt' ? qtSheetHTML() : S.sheet.kind === 'ses' ? sesSheetHTML() : S.sheet.kind === 'settings' ? settingsSheetHTML() : gSheetHTML();
+  root.innerHTML = S.sheet.kind === 'item' ? itemSheetHTML() : S.sheet.kind === 'sp' ? spSheetHTML() : S.sheet.kind === 'qt' ? qtSheetHTML() : S.sheet.kind === 'ses' ? sesSheetHTML() : S.sheet.kind === 'hist' ? histSheetHTML() : S.sheet.kind === 'settings' ? settingsSheetHTML() : gSheetHTML();
   if (hadSheet) { const sh = $('.sheet', root), sc = $('.scrim', root); sh.style.animation = 'none'; sh.style.transform = 'none'; sc.style.animation = 'none'; sc.style.opacity = 1; }
   const b = $('.sh-body', root); if (b) b.scrollTop = scroll;
 }
@@ -1112,6 +1112,29 @@ function qtStop(save) {
     toast(`Logged ${fmtHrs(mins)} · ${qtName(q.classId)}`);
   } else if (save) toast('Under a minute, so nothing was logged');
   render();
+}
+/* completed study for a test: edit, undo, or put back on the calendar */
+function histRows(t) {
+  const rows = [], studies = S.items.filter(i => i.type === 'study' && i.testId === t.id);
+  Object.keys(S.logs).sort().forEach(d => {
+    const lg = S.logs[d];
+    studies.forEach(i => { if (lg.done?.[i.id]) rows.push({ k: 'item', d, id: i.id, title: i.title, mins: lg.mins?.[i.id] || i.est || 0 }); });
+    (lg.sessions || []).forEach(x => {
+      if (!t.classId || x.classId !== t.classId) return;
+      const nxt = S.items.filter(i => i.type === 'test' && i.classId === t.classId && i.date >= d).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
+      if (nxt && nxt.id === t.id) rows.push({ k: 'ses', d, id: x.id, title: x.note ? x.note.split('\n')[0] : 'Timed session', mins: x.mins, start: x.start });
+    });
+  });
+  return rows;
+}
+function histSheetHTML() {
+  const t = S.items.find(x => x.id === S.sheet.tid); if (!t) return '';
+  const rows = histRows(t);
+  return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
+    <div class="sh-head"><span class="link"></span><b>${esc(t.title)} · completed</b><button class="link r save" data-act="close">Done</button></div>
+    <div class="sh-body">${rows.length ? rows.map((r, i) => `<div class="f"><div class="fr stack"><b>${esc(r.title)}</b><span class="muted">${shortDate(r.d)} · ${fmtHrs(r.mins)}${r.start ? ' · ' + fmtRange(toMin(r.start), toMin(r.start) + r.mins) : ''}</span>
+      <span class="calctl" style="margin-top:8px"><button class="cb" data-act="histedit" data-i="${i}">Edit</button><button class="cb" data-act="histundo" data-i="${i}">Undo</button>${r.k === 'ses' ? `<button class="cb" data-act="histback" data-i="${i}">Back to calendar</button>` : ''}</span></div></div>`).join('') : '<p class="hint">Nothing completed yet.</p>'}
+      <p class="hint">Undo marks it not done. Back to calendar removes the timed session and puts it on that day's schedule as an open study block.</p></div></div>`;
 }
 /* edit / add / undo a logged study session */
 function openSess(d, id) {
@@ -1271,6 +1294,14 @@ document.addEventListener('click', e => {
       case 'qtstop': qtStop(true); break;
       case 'qtdiscard': if (confirm('Discard this timer without logging?')) qtStop(false); break;
       case 'delsess': openSess(t.dataset.d, id); break;
+      case 'sthist': S.sheet = { kind: 'hist', tid: id }; renderSheet(); break;
+      case 'histedit': case 'histundo': case 'histback': {
+        const hi = +t.dataset.i, tt = S.items.find(x => x.id === S.sheet.tid), r = tt && histRows(tt)[hi]; if (!r) break;
+        if (act === 'histedit') { if (r.k === 'ses') openSess(r.d, r.id); else openEdit(r.id); break; }
+        if (r.k === 'item') toggleDone(r.id, r.d);
+        else { const lg = blankLog(clean(logOf(r.d))); lg.sessions = (lg.sessions || []).filter(x => x.id !== r.id); DB.saveLog(r.d, lg);
+          if (act === 'histback') { const st = r.start || '18:00'; DB.saveItem({ id: uid(), type: 'study', title: tt.title + ' study', note: '', date: r.d, start: st, end: fromMin(Math.min(1439, toMin(st) + r.mins)), anytime: false, rec: { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }, active: true, color: '', testId: tt.id, classId: tt.classId || '', score: null, max: null, inWeek: true, est: r.mins }); } }
+        renderSheet(); render(); toast(act === 'histback' ? 'Back on your calendar' : 'Undone'); break; }
       case 'sesnew': openSess('', ''); break;
       case 'sessave': sesSave(); break;
       case 'sesdel': { const D = S.sheet.draft, lg = blankLog(clean(logOf(D.d))); lg.sessions = (lg.sessions || []).filter(x => x.id !== D.id); DB.saveLog(D.d, lg); S.sheet = null; renderSheet(); render(); toast('Session removed'); break; }
