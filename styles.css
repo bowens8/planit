@@ -388,3 +388,6 @@ body.dragging{overflow:hidden;-webkit-user-select:none;user-select:none}
 
 .bnote{margin-top:3px;font-size:12px;line-height:14px;font-weight:500;color:var(--muted);white-space:pre-wrap;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;word-break:break-word}
 .blk.done .bnote{opacity:.7}
+
+.qtplay{position:absolute;right:6px;top:4px;border:0;border-radius:50%;width:26px;height:26px;background:var(--c,var(--accent));color:#fff;font-size:11px;line-height:26px;padding:0 0 0 2px;cursor:pointer;z-index:2}
+.row .qtplay{position:static;flex:none;margin-left:8px}
