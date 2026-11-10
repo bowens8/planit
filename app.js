@@ -167,7 +167,13 @@ const isCarry = it => !!it._src;
 const carried = d => {
   if (d < todayStr()) return [];
   const out = [];
-  S.items.forEach(i => { const src = carrySrc(i, d); if (!src) return; const v = { ...i, id: `${i.id}@${src}`, _base: i.id, _src: src, anytime: true, start: '', end: '', rec: { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 } }; VIRT[v.id] = v; out.push(v); });
+  const mkV = (i, src) => { const v = { ...i, id: `${i.id}@${src}`, _base: i.id, _src: src, anytime: true, start: '', end: '', rec: { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 } }; VIRT[v.id] = v; return v; };
+  S.items.forEach(i => { const src = carrySrc(i, d); if (src) out.push(mkV(i, src)); });
+  // blocks you finished today as a carried-over copy stay put (struck through) instead of vanishing
+  Object.keys(logOf(d).done || {}).forEach(k => {
+    if (!k.includes('@') || out.some(v => v.id === k)) return;
+    const [bid, src] = k.split('@'), base = S.items.find(x => x.id === bid); if (base && src) out.push(mkV(base, src));
+  });
   return out;
 };
 const doneFor = (it, d) => (it.type === 'assignment' ? !!it.done : isDone(it.id, d));
@@ -1209,7 +1215,7 @@ document.addEventListener('click', e => {
         S.scrollToNow = true; render(); ensureGcal(); break;
       case 'toggle': {
         e.stopPropagation(); const it = itemById(id);
-        if (it?.type === 'assignment') DB.saveItem({ ...it, done: !it.done }); else if (it?._src) toggleDone(it._base, it._src); else toggleDone(id, S.date);
+        if (it?.type === 'assignment') DB.saveItem({ ...it, done: !it.done }); else if (it?._src) { toggleDone(it._base, it._src); toggleDone(it.id, S.date); } else toggleDone(id, S.date);
         render(); if (it && it.type !== 'assignment' && (it._src || isDone(id, S.date))) toast('Done ✓  Tap it to add a note', 2600); break;
       }
       case 'add': openAdd(null); break;
