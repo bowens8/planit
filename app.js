@@ -108,7 +108,8 @@ const sessionOn = (it, d) => sessionsOf(it).find(x => x.d === d);
 const sessMins = (it, x) => (x && x.m) || it.est || 60;
 const withSessions = (it, sessions) => { const { workStart, workDate, ...rest } = it; return { ...rest, sessions: sessions.slice().sort((a, b) => (a.d + a.s < b.d + b.s ? -1 : 1)) }; };
 const placeable = it => it.type === 'habit' || it.type === 'study';
-const placedAt = (it, d) => (placeable(it) && (it.anytime || !it.start)) ? (logOf(d).at?.[it.id] || '') : '';
+const placedAt = (it, d) => (placeable(it) && ((it.anytime || !it.start) || logOf(d).run?.[it.id])) ? (logOf(d).at?.[it.id] || '') : '';
+const lenOf = (it, d) => logOf(d).len?.[it.id] || it.est || 30;
 const blankLog = lg => { lg.done ||= {}; lg.skipped ||= {}; lg.mins ||= {}; return lg; };
 function weekDoneCount(it, anyDay) {
   const ws = weekStart(anyDay); let n = 0;
@@ -507,7 +508,7 @@ function anytimeRow(it, d) {
   const badge = it.type === 'assignment' ? assignBadge(it) : checkable(it) ? habitBadge(it, d) : it.type === 'test' ? `<span class="badge">${cd(it.date)}</span>` : '';
   return `<div class="row ${sk ? 'skipped' : ''} ${met ? 'met' : ''}" data-act="open" data-id="${it.id}"${((it.type === 'assignment' && !it.done) || (placeable(it) && !done)) ? ` data-drag="${it.id}"` : ''}>
     ${checkable(it) ? `<button class="chk ${done ? 'on' : ''}" style="--c:${late ? 'var(--danger)' : c}" data-act="toggle" data-id="${it.id}" aria-label="Toggle done"></button>` : `<span class="chk" style="--c:${c};border-style:dashed"></span>`}
-    <div class="t"><b>${esc(it.title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}${noteH}</div>${badge}</div>`;
+    <div class="t"><b>${esc(it.title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}${noteH}</div>${badge}${it.type === 'study' && !done && !S.qt ? `<button class="qtplay" data-act="qtitem" data-id="${it.id}" aria-label="Start timer">▶</button>` : ''}</div>`;
 }
 
 function trayHTML(d) {
@@ -530,8 +531,8 @@ function dayHTML() {
   const allDay = gc.filter(e => e.allDay);
   const blocks = [
     ...sched.map(i => { const x = sessionOn(i, d), s = toMin(x.s); return { k: 'app', id: i.id, type: 'assignment', title: i.title, s, e: Math.min(1440, s + sessMins(i, x)), it: i, sched: true }; }),
-    ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.min(1440, s + (i.est || 30)), it: i, placed: true }; }),
-    ...items.filter(i => i.type !== 'assignment' && !isCarry(i) && !(i.anytime || !i.start)).map(i => {
+    ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.min(1440, s + lenOf(i, d)), it: i, placed: true }; }),
+    ...items.filter(i => i.type !== 'assignment' && !isCarry(i) && !(i.anytime || !i.start) && !placedAt(i, d)).map(i => {
       const s = toMin(i.start); const e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? (i.est || 30) : 60);
       return { k: 'app', id: i.id, type: i.type, title: i.title, s, e: Math.max(e, s + 15), it: i };
     }),
@@ -569,7 +570,7 @@ function dayHTML() {
     const body = [b.it?.note, noteOf(b.it, d)?.b].filter(Boolean).join('\n'), fit = Math.floor((ht - (sm ? 30 : 40)) / 14);
     return `<div class="blk${sm} ${b.type} ${done ? 'done' : ''} ${sk ? 'skipped' : ''}" style="${style}" data-act="open" data-id="${b.id}"${(b.sched || b.placed) && !done ? ` data-drag="${b.id}"` : ''}>
       ${checkable(b.it) ? `<button class="chk ${done ? 'on' : ''}" data-act="toggle" data-id="${b.id}" aria-label="Toggle done"></button>` : ''}
-      <div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}${ex ? ' · ' + esc(ex) : ''}</span>${body && fit >= 1 ? `<div class="bnote" style="-webkit-line-clamp:${fit}">${esc(body)}</div>` : ''}</div>${b.sched ? `<i class="grip" data-resize="${b.id}"></i>` : ''}</div>`;
+      <div class="bt"><b>${esc(b.title)}</b><span>${fmtRange(b.s, b.e)}${ex ? ' · ' + esc(ex) : ''}</span>${body && fit >= 1 ? `<div class="bnote" style="-webkit-line-clamp:${fit}">${esc(body)}</div>` : ''}</div>${b.type === 'study' && !done && !S.qt ? `<button class="qtplay" data-act="qtitem" data-id="${b.id}" aria-label="Start timer">▶</button>` : ''}${b.sched ? `<i class="grip" data-resize="${b.id}"></i>` : ''}</div>`;
   }).join('');
   let now = '';
   if (d === todayStr()) { const n = new Date(), m = n.getHours() * 60 + n.getMinutes(); if (m >= rs * 60 && m <= re * 60) now = `<div class="now" style="top:${(m - rs * 60) / 60 * H}px"></div>`; }
@@ -607,8 +608,8 @@ function weekHTML() {
     const sched = S.items.filter(i => i.type === 'assignment' && sessionOn(i, d) && (!i.done || d <= t) && i.inWeek !== false);
     const blocks = [
       ...sched.map(i => { const x = sessionOn(i, d), s = toMin(x.s); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + sessMins(i, x)), c: colorOf(i), done: !!i.done }; }),
-      ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + (i.est || 30)), c: colorOf(i), done: doneFor(i, d) }; }),
-      ...items.filter(i => i.type !== 'assignment' && !(i.anytime || !i.start)).map(i => { const s = toMin(i.start), e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? (i.est || 30) : 60); return { k: 'app', id: i.id, title: i.title, s, e: Math.max(e, s + 15), c: colorOf(i), done: doneFor(i, d) }; }),
+      ...items.filter(i => placedAt(i, d)).map(i => { const s = toMin(placedAt(i, d)); return { k: 'app', id: i.id, title: i.title, s, e: Math.min(1440, s + lenOf(i, d)), c: colorOf(i), done: doneFor(i, d) }; }),
+      ...items.filter(i => i.type !== 'assignment' && !(i.anytime || !i.start) && !placedAt(i, d)).map(i => { const s = toMin(i.start), e = i.end ? toMin(i.end) : s + (i.type === 'habit' ? (i.est || 30) : 60); return { k: 'app', id: i.id, title: i.title, s, e: Math.max(e, s + 15), c: colorOf(i), done: doneFor(i, d) }; }),
       ...gc.filter(e => !e.allDay).map(e => ({ k: 'g', id: e.id, title: e.title, s: e.s, e: e.e, c: gColor(e) })),
     ];
     const schedIds = new Set(sched.map(i => i.id));
@@ -1096,17 +1097,30 @@ try { S.qt = JSON.parse(localStorage.getItem('planit.qt') || 'null'); } catch { 
 const qtElapsed = () => (S.qt ? Math.max(0, Date.now() - S.qt.t0) : 0);
 const qtText = ms => { const t = Math.floor(ms / 1000), h = Math.floor(t / 3600); return `${h ? h + ':' : ''}${pad(Math.floor(t % 3600 / 60))}:${pad(t % 60)}`; };
 const qtName = id => (id ? classById(id)?.name || 'Class' : 'Study');
-function qtStart(classId) {
-  S.qt = { classId: classId || '', t0: Date.now() };
+function qtStart(classId, itemId) {
+  const it = itemId && itemById(itemId);
+  S.qt = { classId: (it ? it.classId : classId) || '', t0: Date.now(), itemId: it ? itemId : '' };
   try { localStorage.setItem('planit.qt', JSON.stringify(S.qt)); } catch { /* ignore */ }
-  S.sheet = null; renderSheet(); render(); toast(`Timer started · ${qtName(classId)}`);
+  S.sheet = null; renderSheet(); render(); toast(`Timer started · ${it ? it.title : qtName(classId)}`);
 }
 function qtStop(save) {
   const q = S.qt; if (!q) return;
   const mins = Math.round((Date.now() - q.t0) / 60000);
   S.qt = null; try { localStorage.removeItem('planit.qt'); } catch { /* ignore */ }
   S.sheet = null; renderSheet();
-  if (save && mins >= 1) {
+  const linked = save && mins >= 1 && q.itemId && itemById(q.itemId);
+  if (linked) {
+    // the scheduled block takes the timer's real start + length; a second run on it becomes its own block
+    const t0 = new Date(q.t0), d = ymd(t0), st = fromMin(t0.getHours() * 60 + t0.getMinutes()), lg = blankLog(clean(logOf(d)));
+    lg.at ||= {}; lg.len ||= {}; lg.run ||= {};
+    if (!lg.run[q.itemId]) { lg.run[q.itemId] = 1; lg.at[q.itemId] = st; lg.len[q.itemId] = mins; lg.mins[q.itemId] = mins; }
+    else {
+      const base = itemById(q.itemId), bid = base._base || base.id, b0 = S.items.find(x => x.id === bid) || base;
+      lg.run[q.itemId]++;
+      DB.saveItem({ id: uid(), type: 'study', title: b0.title, note: b0.note || '', date: d, start: st, end: fromMin(Math.min(1439, toMin(st) + mins)), anytime: false, rec: { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }, active: true, color: b0.color || '', testId: b0.testId || '', classId: b0.classId || '', score: null, max: null, inWeek: true, est: mins });
+    }
+    DB.saveLog(d, lg); toast(`Block set to ${fmtRange(toMin(st), toMin(st) + mins)}. Check it off when you're done`, 3200);
+  } else if (save && mins >= 1) {
     const t0 = new Date(q.t0), d = ymd(t0), lg = blankLog(clean(logOf(d))); lg.sessions ||= [];
     lg.sessions.push({ id: uid(), classId: q.classId, mins, start: fromMin(t0.getHours() * 60 + t0.getMinutes()) }); DB.saveLog(d, lg);
     toast(`Logged ${fmtHrs(mins)} · ${qtName(q.classId)}`);
@@ -1168,9 +1182,10 @@ function qtSheetHTML() {
     <div class="sh-body"><div class="f"><div class="stopwatch"><span class="time qtt">${qtText(qtElapsed())}</span><span class="muted">${esc(qtName(q.classId))}</span></div></div>
       <button class="btn primary" data-act="qtstop">Stop and log it</button>
       <button class="btn" data-act="qtdiscard" style="color:var(--danger)">Discard</button></div></div>`;
+  const td = todayStr(), todo = [...shown(td), ...carried(td)].filter(i => i.type === 'study' && !isDone(i.id, td));
   return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
     <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>Study timer</b><span></span></div>
-    <div class="sh-body"><div class="sec-title" style="margin-top:0">Tap a class to start</div>
+    <div class="sh-body">${todo.length ? `<div class="sec-title" style="margin-top:0">Today's study blocks</div><div class="f">${todo.map(i => `<button class="qtcls" data-act="qtitem" data-id="${i.id}"><i style="background:${colorOf(i)}"></i>${esc(i.title)}</button>`).join('')}</div>` : ''}<div class="sec-title" style="margin-top:${todo.length ? 16 : 0}px">Or tap a class to start</div>
       <div class="f">${cls.map(c => `<button class="qtcls" data-act="qtgo" data-id="${c.id}"><i style="background:${c.color}"></i>${esc(c.name)}</button>`).join('')}<button class="qtcls" data-act="qtgo" data-id=""><i style="background:#94a3b8"></i>No class</button></div>
       <button class="btn" data-act="sesnew">+ Log time I already studied</button>
       <p class="hint">The timer keeps running in the bar at the bottom, even if you close the app. Tap Stop and the time is logged for you.${cls.length ? '' : ' Add your classes on the Plan tab to pick one here.'}</p></div></div>`;
@@ -1291,6 +1306,7 @@ document.addEventListener('click', e => {
       case 'clearat': { const lg = blankLog(clean(logOf(S.date))); if (lg.at) delete lg.at[S.sheet.draft.id]; DB.saveLog(S.date, lg); renderSheet(); render(); break; }
       case 'qt': S.sheet = { kind: 'qt' }; renderSheet(); break;
       case 'qtgo': qtStart(id); break;
+      case 'qtitem': e.stopPropagation(); qtStart('', id); break;
       case 'qtstop': qtStop(true); break;
       case 'qtdiscard': if (confirm('Discard this timer without logging?')) qtStop(false); break;
       case 'delsess': openSess(t.dataset.d, id); break;
