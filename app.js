@@ -714,6 +714,13 @@ function testStats(t) {
     const nxt = S.items.filter(i => i.type === 'test' && i.classId === t.classId && i.date >= d).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
     if (nxt && nxt.id === t.id) { mins += x.mins; days.add(d); done++; planned++; }
   }));
+  // assignments flagged "counts as study time" add their scheduled time once they're checked off
+  S.items.filter(a => a.type === 'assignment' && a.studyCount && a.done).forEach(a => {
+    const tgt = a.testId ? S.items.find(x => x.id === a.testId) : S.items.filter(x => x.type === 'test' && x.classId && x.classId === a.classId && x.date >= a.date).sort((x, y) => (x.date < y.date ? -1 : 1))[0];
+    if (!tgt || tgt.id !== t.id) return;
+    const ss = sessionsOf(a); done++; planned++;
+    if (ss.length) ss.forEach(x => { mins += sessMins(a, x); days.add(x.d); }); else { mins += a.est || 60; days.add(a.date); }
+  });
   return { done, planned, mins, days: days.size };
 }
 const fmtHrs = m => (m < 60 ? `${m} min` : `${(m / 60).toFixed(1).replace(/\.0$/, '')} h`);
@@ -863,7 +870,7 @@ function openAdd(start) {
 function openEdit(id) {
   const it = S.items.find(x => x.id === id); if (!it) return;
   const d = clean(it); d.rec = { type: 'none', days: [], every: 1, unit: 'day', dom: parse(it.date).getDate(), times: 3, ...(it.rec || {}) };
-  d.color = it.color || null; d.testId = it.testId || ''; d.score = it.score ?? ''; d.max = it.max || 100; d.classId = it.classId || ''; d.inWeek = it.inWeek !== false; d.est = it.est || (it.type === 'habit' ? 30 : 60); { const nn = noteOf(it, S.date); d.dnoteT = nn?.t || ''; d.dnote = nn?.b || ''; d.dnw = {}; for (let w = 0; w < 7; w++) d.dnw[w] = { t: it.dayNotes?.[w]?.t || '', b: it.dayNotes?.[w]?.b || '' }; } d.workDate = ''; d.workStart = ''; d.sessions = sessionsOf(it).map(x => ({ ...x }));
+  d.studyCount = !!it.studyCount; d.color = it.color || null; d.testId = it.testId || ''; d.score = it.score ?? ''; d.max = it.max || 100; d.classId = it.classId || ''; d.inWeek = it.inWeek !== false; d.est = it.est || (it.type === 'habit' ? 30 : 60); { const nn = noteOf(it, S.date); d.dnoteT = nn?.t || ''; d.dnote = nn?.b || ''; d.dnw = {}; for (let w = 0; w < 7; w++) d.dnw[w] = { t: it.dayNotes?.[w]?.t || '', b: it.dayNotes?.[w]?.b || '' }; } d.workDate = ''; d.workStart = ''; d.sessions = sessionsOf(it).map(x => ({ ...x }));
   if (!d.start) { d.start = d.type === 'block' ? '23:00' : '09:00'; d.end = d.type === 'block' ? '07:00' : '10:00'; }
   S.sheet = { kind: 'item', draft: d, editing: true }; renderSheet();
 }
@@ -993,6 +1000,7 @@ function itemSheetHTML() {
       </div>
       ${workCard}${durCard}${colorCard}
       ${D.type === 'habit' ? '' : `<div class="f"><div class="fr"><label>Show on week view</label>${onOff(D.inWeek !== false, 'inweek')}</div></div>`}
+      ${isA ? `<div class="f"><div class="fr"><label>Counts as study time</label>${onOff(!!D.studyCount, 'studycount')}</div>${D.studyCount ? `<div class="fr"><label>For test</label><select data-f="testId"><option value="">Next test in this class</option>${tests.filter(t => !D.classId || t.classId === D.classId).map(t => `<option value="${t.id}" ${D.testId === t.id ? 'selected' : ''}>${esc(t.title)} · ${shortDate(t.date)}</option>`).join('')}</select></div>` : ''}</div>` : ''}
       ${editing && checkable(D) && !isA && occursToday ? `<button class="btn" data-act="skip">${isSkipped(D.id, d) ? 'Unskip today' : 'Skip today (keeps streak)'}</button>` : ''}
       ${r.type !== 'none' && editing && !noRepeat ? '<p class="hint">Edits apply to the whole series.</p>' : ''}
       ${editing ? '<button class="btn danger" data-act="delete">Delete</button>' : ''}
@@ -1222,12 +1230,13 @@ function saveDraft() {
   const it = {
     id: D.id, type: D.type, title: D.title.trim(), note: (D.note || '').trim(), date: D.date,
     start: anytime ? '' : D.start, end: (anytime || D.type === 'assignment') ? '' : D.end, anytime, rec: D.rec, active: D.active,
-    color: D.color || '', testId: D.type === 'study' ? (D.testId || '') : '',
+    color: D.color || '', testId: (D.type === 'study' || (D.type === 'assignment' && D.studyCount)) ? (D.testId || '') : '',
     classId: ['study', 'test', 'assignment'].includes(D.type) ? (D.classId || '') : '',
     score: D.type === 'test' && D.score !== '' && D.score != null ? Number(D.score) : null,
     max: D.type === 'test' ? (Number(D.max) || 100) : null,
   };
   it.inWeek = D.inWeek !== false;
+  if (D.type === 'assignment') it.studyCount = !!D.studyCount;
   if (placeable(D)) it.est = Number(D.est) || (D.type === 'habit' ? 30 : 60);
   delete it.doneNote;
   if (D.type === 'habit') { const dn = {}; for (let w = 0; w < 7; w++) { const x = D.dnw?.[w]; if (x && ((x.t || '').trim() || (x.b || '').trim())) dn[w] = { t: (x.t || '').trim(), b: (x.b || '').trim() }; } if (Object.keys(dn).length) it.dayNotes = dn; }
@@ -1347,6 +1356,7 @@ document.addEventListener('click', e => {
         if (f === 'timed') { D.anytime = !D.anytime; if (!D.anytime && !D.start) D.start = '09:00', D.end = '10:00'; }
         if (f === 'active') D.active = !D.active;
         if (f === 'inweek') D.inWeek = D.inWeek === false;
+        if (f === 'studycount') D.studyCount = !D.studyCount;
         renderSheet(); break;
       }
       case 'dow': {
