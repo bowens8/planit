@@ -558,7 +558,7 @@ function dayHTML() {
     const s = Math.max(b.s, rs * 60), e = Math.min(b.e, re * 60); if (e <= s) return '';
     return `<div class="blk block" style="--c:${colorOf(b.it)};top:${(s - rs * 60) / 60 * H}px;height:${(e - s) / 60 * H}px;left:0;right:0" data-act="open" data-id="${b.it.id}"><div class="bt"><b>${esc(b.it.title)}</b><span>${fmtRange(toMin(b.it.start), toMin(b.it.end))}</span></div></div>`;
   }).join('');
-  const sessHTML = sess.map(x => `<div class="blk sess" style="--c:${x.classId ? (classById(x.classId)?.color || '#22a06b') : '#22a06b'};top:${(x.s - rs * 60) / 60 * H}px;height:${Math.max((x.e - x.s) / 60 * H - 2, 26)}px;left:0;right:0" data-act="delsess" data-d="${d}" data-id="${x.id}"><div class="bt"><b>✓ Studied · ${esc(qtName(x.classId))}</b><span>${fmtRange(x.s, x.e)} · ${fmtHrs(x.mins)}</span></div></div>`).join('');
+  const sessHTML = sess.map(x => `<div class="blk sess" style="--c:${x.classId ? (classById(x.classId)?.color || '#22a06b') : '#22a06b'};top:${(x.s - rs * 60) / 60 * H}px;height:${Math.max((x.e - x.s) / 60 * H - 2, 26)}px;left:0;right:0" data-act="delsess" data-d="${d}" data-id="${x.id}"><div class="bt"><b>✓ Studied · ${esc(qtName(x.classId))}</b><span>${fmtRange(x.s, x.e)} · ${fmtHrs(x.mins)}${x.note ? ' · ' + esc(x.note.split('\n')[0]) : ''}</span></div></div>`).join('');
   const blk = blocks.map(b => {
     const top = (b.s - rs * 60) / 60 * H, ht = Math.max((b.e - b.s) / 60 * H - 2, 26);
     const left = (b.col / b.cols) * 100, w = 100 / b.cols;
@@ -1086,7 +1086,7 @@ function renderSheet() {
   if (!S.sheet) { root.innerHTML = ''; return; }
   const scroll = $('.sh-body', root)?.scrollTop || 0;
   const hadSheet = !!$('.sheet', root);
-  root.innerHTML = S.sheet.kind === 'item' ? itemSheetHTML() : S.sheet.kind === 'sp' ? spSheetHTML() : S.sheet.kind === 'qt' ? qtSheetHTML() : S.sheet.kind === 'settings' ? settingsSheetHTML() : gSheetHTML();
+  root.innerHTML = S.sheet.kind === 'item' ? itemSheetHTML() : S.sheet.kind === 'sp' ? spSheetHTML() : S.sheet.kind === 'qt' ? qtSheetHTML() : S.sheet.kind === 'ses' ? sesSheetHTML() : S.sheet.kind === 'settings' ? settingsSheetHTML() : gSheetHTML();
   if (hadSheet) { const sh = $('.sheet', root), sc = $('.scrim', root); sh.style.animation = 'none'; sh.style.transform = 'none'; sc.style.animation = 'none'; sc.style.opacity = 1; }
   const b = $('.sh-body', root); if (b) b.scrollTop = scroll;
 }
@@ -1113,6 +1113,31 @@ function qtStop(save) {
   } else if (save) toast('Under a minute, so nothing was logged');
   render();
 }
+/* edit / add / undo a logged study session */
+function openSess(d, id) {
+  const x = id && (logOf(d).sessions || []).find(y => y.id === id);
+  S.sheet = { kind: 'ses', draft: x ? { id, d, date: d, classId: x.classId || '', start: x.start, mins: x.mins, note: x.note || '' } : { id: '', d: '', date: S.date, classId: '', start: fromMin(Math.min(1380, Math.max(0, new Date().getHours() * 60 - 60))), mins: 60, note: '' } };
+  renderSheet();
+}
+function sesSheetHTML() {
+  const D = S.sheet.draft, cls = S.settings.classes || [];
+  return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
+    <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>${D.id ? 'Study session' : 'Log study time'}</b><button class="link r save" data-act="sessave">Save</button></div>
+    <div class="sh-body"><div class="f">
+      <div class="fr"><label>Class</label><select data-f="classId"><option value="">No class</option>${cls.map(c => `<option value="${c.id}" ${D.classId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div class="fr"><label>Date</label><input type="date" data-f="date" value="${D.date}"></div>
+      <div class="fr"><label>Started</label><input type="time" data-f="start" value="${D.start}"></div>
+      <div class="fr"><label>Minutes</label><input type="number" min="1" max="720" data-f="mins" value="${D.mins}"></div>
+      <div class="fr stack"><label>Details</label><textarea data-f="note" rows="3" placeholder="What did you cover?">${esc(D.note)}</textarea></div></div>
+      ${D.id ? '<button class="btn" data-act="sesdel" style="color:var(--danger)">Undo / remove this session</button>' : ''}</div></div>`;
+}
+function sesSave() {
+  const D = S.sheet.draft, m = Math.max(1, Math.min(720, parseInt(D.mins, 10) || 1));
+  if (D.id) { const o = blankLog(clean(logOf(D.d))); o.sessions = (o.sessions || []).filter(x => x.id !== D.id); DB.saveLog(D.d, o); }
+  const lg = blankLog(clean(logOf(D.date || S.date))); lg.sessions ||= [];
+  lg.sessions.push({ id: D.id || uid(), classId: D.classId, mins: m, start: D.start || '18:00', ...(D.note.trim() ? { note: D.note.trim() } : {}) }); DB.saveLog(D.date || S.date, lg);
+  S.sheet = null; renderSheet(); render(); toast('Saved');
+}
 function qtSheetHTML() {
   const cls = S.settings.classes || [], q = S.qt;
   if (q) return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
@@ -1124,6 +1149,7 @@ function qtSheetHTML() {
     <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>Study timer</b><span></span></div>
     <div class="sh-body"><div class="sec-title" style="margin-top:0">Tap a class to start</div>
       <div class="f">${cls.map(c => `<button class="qtcls" data-act="qtgo" data-id="${c.id}"><i style="background:${c.color}"></i>${esc(c.name)}</button>`).join('')}<button class="qtcls" data-act="qtgo" data-id=""><i style="background:#94a3b8"></i>No class</button></div>
+      <button class="btn" data-act="sesnew">+ Log time I already studied</button>
       <p class="hint">The timer keeps running in the bar at the bottom, even if you close the app. Tap Stop and the time is logged for you.${cls.length ? '' : ' Add your classes on the Plan tab to pick one here.'}</p></div></div>`;
 }
 /* stopwatch */
@@ -1244,7 +1270,10 @@ document.addEventListener('click', e => {
       case 'qtgo': qtStart(id); break;
       case 'qtstop': qtStop(true); break;
       case 'qtdiscard': if (confirm('Discard this timer without logging?')) qtStop(false); break;
-      case 'delsess': if (confirm('Remove this logged study session?')) { const dd = t.dataset.d, lg = blankLog(clean(logOf(dd))); lg.sessions = (lg.sessions || []).filter(x => x.id !== id); DB.saveLog(dd, lg); render(); } break;
+      case 'delsess': openSess(t.dataset.d, id); break;
+      case 'sesnew': openSess('', ''); break;
+      case 'sessave': sesSave(); break;
+      case 'sesdel': { const D = S.sheet.draft, lg = blankLog(clean(logOf(D.d))); lg.sessions = (lg.sessions || []).filter(x => x.id !== D.id); DB.saveLog(D.d, lg); S.sheet = null; renderSheet(); render(); toast('Session removed'); break; }
       case 'rmsess': S.sheet.draft.sessions.splice(+t.dataset.i, 1); renderSheet(); break;
       case 'vabs': { const D = S.sheet.draft; D.absent[t.dataset.k] = !D.absent[t.dataset.k]; renderSheet(); break; }
       case 'qadd': openAddType(t.dataset.t); break;
