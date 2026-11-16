@@ -309,7 +309,7 @@ const DB = {
 
 function toggleDone(id, d) {
   const lg = clean(logOf(d)); lg.done ||= {}; lg.skipped ||= {}; lg.mins ||= {};
-  if (lg.done[id]) delete lg.done[id]; else { lg.done[id] = true; delete lg.skipped[id]; }
+  if (lg.done[id]) { delete lg.done[id]; delete lg.mins[id]; } else { lg.done[id] = true; delete lg.skipped[id]; }   // un-checking also takes its time out of progress
   DB.saveLog(d, lg);
 }
 function toggleSkip(id, d) {
@@ -714,6 +714,10 @@ function testStats(t) {
     const nxt = S.items.filter(i => i.type === 'test' && i.classId === t.classId && i.date >= d).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
     if (nxt && nxt.id === t.id) { mins += x.mins; days.add(d); done++; planned++; }
   }));
+  Object.keys(S.logs).forEach(d => { const lg = S.logs[d]; new Set([...Object.keys(lg.done || {}), ...Object.keys(lg.mins || {})]).forEach(key => {
+    if (!key.includes('@')) return; const i = studies.find(x => x.id === key.split('@')[0]); if (!i) return;
+    if (lg.done?.[key]) { done++; mins += lg.mins?.[key] || i.est || 0; days.add(d); } else if (lg.mins?.[key]) { mins += lg.mins[key]; days.add(d); }
+  }); });
   // assignments flagged "counts as study time" add their scheduled time once they're checked off
   S.items.filter(a => a.type === 'assignment' && a.studyCount && a.done).forEach(a => {
     const tgt = a.testId ? S.items.find(x => x.id === a.testId) : S.items.filter(x => x.type === 'test' && x.classId && x.classId === a.classId && x.date >= a.date).sort((x, y) => (x.date < y.date ? -1 : 1))[0];
@@ -940,7 +944,8 @@ function itemSheetHTML() {
       <button data-act="sw-toggle">${swOn && sw.running ? 'Pause' : swOn && sw.acc ? 'Resume' : 'Start'}</button>
       <button data-act="sw-reset">Reset</button></div>
       <div class="fr"><span class="muted">${logged ? `Logged today: ${logged} min` : 'Optional stopwatch. Nothing is logged unless you add it.'}</span>
-      <button data-act="sw-log" style="color:var(--accent);font-weight:650">Add to today</button></div></div>` : '';
+      <button data-act="sw-log" style="color:var(--accent);font-weight:650">Add to today</button></div>
+      <div class="fr"><span class="muted">Set the real time you studied</span><button data-act="itemday" style="color:var(--accent);font-weight:650">Edit ${S.date === todayStr() ? 'today' : shortDate(S.date)}</button></div></div>` : '';
 
   const cls = S.settings.classes || [];
   const classCard = ['study', 'test', 'assignment'].includes(D.type) ? `<div class="f"><div class="fr"><label>Class</label><select data-f="classId"><option value="">None</option>${cls.map(c => `<option value="${c.id}" ${D.classId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div></div>${cls.length ? '' : '<p class="hint">Add your classes in the Plan tab to color-code and group work.</p>'}` : '';
@@ -1140,7 +1145,11 @@ function histRows(t) {
   const rows = [], studies = S.items.filter(i => i.type === 'study' && i.testId === t.id);
   Object.keys(S.logs).sort().forEach(d => {
     const lg = S.logs[d];
-    studies.forEach(i => { if (lg.done?.[i.id]) rows.push({ k: 'item', d, id: i.id, title: i.title, mins: lg.mins?.[i.id] || i.est || 0 }); });
+    new Set([...Object.keys(lg.done || {}), ...Object.keys(lg.mins || {})]).forEach(key => {
+      const i = studies.find(x => x.id === key.split('@')[0]); if (!i) return;
+      const dn = !!lg.done?.[key], lm = lg.mins?.[key] || 0; if (!dn && !lm) return;
+      rows.push({ k: 'item', d, id: key, done: dn, title: i.title, mins: lm || lg.len?.[key] || i.est || 0, start: lg.at?.[key] || (i.start && !i.anytime ? i.start : '') });
+    });
     (lg.sessions || []).forEach(x => {
       if (!t.classId || x.classId !== t.classId) return;
       const nxt = S.items.filter(i => i.type === 'test' && i.classId === t.classId && i.date >= d).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
@@ -1154,9 +1163,16 @@ function histSheetHTML() {
   const rows = histRows(t);
   return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
     <div class="sh-head"><span class="link"></span><b>${esc(t.title)} · completed</b><button class="link r save" data-act="close">Done</button></div>
-    <div class="sh-body">${rows.length ? rows.map((r, i) => `<div class="f"><div class="fr stack"><b>${esc(r.title)}</b><span class="muted">${shortDate(r.d)} · ${fmtHrs(r.mins)}${r.start ? ' · ' + fmtRange(toMin(r.start), toMin(r.start) + r.mins) : ''}</span>
-      <span class="calctl" style="margin-top:8px"><button class="cb" data-act="histedit" data-i="${i}">Edit</button><button class="cb" data-act="histundo" data-i="${i}">Undo</button>${r.k === 'ses' ? `<button class="cb" data-act="histback" data-i="${i}">Back to calendar</button>` : ''}</span></div></div>`).join('') : '<p class="hint">Nothing completed yet.</p>'}
-      <p class="hint">Undo marks it not done. Back to calendar removes the timed session and puts it on that day's schedule as an open study block.</p></div></div>`;
+    <div class="sh-body">${rows.length ? rows.map((r, i) => `<div class="f"><div class="fr stack"><b>${esc(r.title)}</b><span class="muted">${shortDate(r.d)} · ${fmtHrs(r.mins)}${r.k === 'item' && !r.done ? ' · not checked off' : ''}${r.start ? ' · ' + fmtRange(toMin(r.start), toMin(r.start) + r.mins) : ''}</span>
+      <span class="calctl" style="margin-top:8px"><button class="cb" data-act="histedit" data-i="${i}">Edit</button><button class="cb" data-act="histundo" data-i="${i}">${r.k === 'item' ? 'Remove time' : 'Undo'}</button>${r.k === 'ses' ? `<button class="cb" data-act="histback" data-i="${i}">Back to calendar</button>` : ''}</span></div></div>`).join('') : '<p class="hint">Nothing completed yet.</p>'}
+      <button class="btn" data-act="histadd">+ Add time I studied</button>
+      <p class="hint">Edit sets the real start and minutes. Remove time clears it from your progress (and un-checks it). Back to calendar removes the timed session and puts it on that day's schedule as an open study block.</p></div></div>`;
+}
+const clearDay = (key, d) => { const lg = blankLog(clean(logOf(d))); ['done', 'skipped', 'mins', 'at', 'len', 'run'].forEach(f => { if (lg[f]) delete lg[f][key]; }); DB.saveLog(d, lg); };
+function openItemDay(key, d) {
+  const b = itemById(key) || itemById(key.split('@')[0]); if (!b) return; const lg = logOf(d);
+  S.sheet = { kind: 'ses', draft: { k: 'item', key, d, date: d, title: b.title, start: lg.at?.[key] || (b.start && !b.anytime ? b.start : '18:00'), mins: lg.len?.[key] || lg.mins?.[key] || b.est || 60, done: lg.done?.[key] ? 'y' : 'n' } };
+  renderSheet();
 }
 /* edit / add / undo a logged study session */
 function openSess(d, id) {
@@ -1166,6 +1182,13 @@ function openSess(d, id) {
 }
 function sesSheetHTML() {
   const D = S.sheet.draft, cls = S.settings.classes || [];
+  if (D.k === 'item') return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
+    <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>${esc(D.title)}</b><button class="link r save" data-act="sessave">Save</button></div>
+    <div class="sh-body"><p class="hint" style="margin-top:0">${shortDate(D.d)} · set when you actually studied. This is what counts toward your progress.</p><div class="f">
+      <div class="fr"><label>Started</label><input type="time" data-f="start" value="${D.start}"></div>
+      <div class="fr"><label>Minutes studied</label><input type="number" min="1" max="720" data-f="mins" value="${D.mins}"></div>
+      <div class="fr"><label>Status</label><select data-f="done"><option value="y" ${D.done === 'y' ? 'selected' : ''}>Done (crossed out)</option><option value="n" ${D.done !== 'y' ? 'selected' : ''}>Not checked off</option></select></div></div>
+      <button class="btn" data-act="sesdel" style="color:var(--danger)">Remove this time and undo</button></div></div>`;
   return `<div class="scrim" data-act="close"></div><div class="sheet"><div class="grab"></div>
     <div class="sh-head"><button class="link" data-act="close">Cancel</button><b>${D.id ? 'Study session' : 'Log study time'}</b><button class="link r save" data-act="sessave">Save</button></div>
     <div class="sh-body"><div class="f">
@@ -1177,7 +1200,15 @@ function sesSheetHTML() {
       ${D.id ? '<button class="btn" data-act="sesdel" style="color:var(--danger)">Undo / remove this session</button>' : ''}</div></div>`;
 }
 function sesSave() {
-  const D = S.sheet.draft, m = Math.max(1, Math.min(720, parseInt(D.mins, 10) || 1));
+  const D = S.sheet.draft;
+  if (D.k === 'item') {
+    const m = Math.max(1, Math.min(720, parseInt(D.mins, 10) || 1)), lg = blankLog(clean(logOf(D.d)));
+    lg.at ||= {}; lg.len ||= {}; lg.run ||= {};
+    lg.at[D.key] = D.start || '18:00'; lg.len[D.key] = m; lg.mins[D.key] = m; lg.run[D.key] = lg.run[D.key] || 1;
+    if (D.done === 'y') lg.done[D.key] = true; else delete lg.done[D.key];
+    DB.saveLog(D.d, lg); S.sheet = null; renderSheet(); render(); toast('Saved'); return;
+  }
+  const m = Math.max(1, Math.min(720, parseInt(D.mins, 10) || 1));
   if (D.id) { const o = blankLog(clean(logOf(D.d))); o.sessions = (o.sessions || []).filter(x => x.id !== D.id); DB.saveLog(D.d, o); }
   const lg = blankLog(clean(logOf(D.date || S.date))); lg.sessions ||= [];
   lg.sessions.push({ id: D.id || uid(), classId: D.classId, mins: m, start: D.start || '18:00', ...(D.note.trim() ? { note: D.note.trim() } : {}) }); DB.saveLog(D.date || S.date, lg);
@@ -1319,17 +1350,19 @@ document.addEventListener('click', e => {
       case 'qtstop': qtStop(true); break;
       case 'qtdiscard': if (confirm('Discard this timer without logging?')) qtStop(false); break;
       case 'delsess': openSess(t.dataset.d, id); break;
+      case 'histadd': { const tt = S.items.find(x => x.id === S.sheet.tid); openSess('', ''); S.sheet.draft.classId = tt?.classId || ''; S.sheet.draft.date = todayStr(); renderSheet(); break; }
+      case 'itemday': { const D = S.sheet.draft; openItemDay(D.id, S.date); break; }
       case 'sthist': S.sheet = { kind: 'hist', tid: id }; renderSheet(); break;
       case 'histedit': case 'histundo': case 'histback': {
         const hi = +t.dataset.i, tt = S.items.find(x => x.id === S.sheet.tid), r = tt && histRows(tt)[hi]; if (!r) break;
-        if (act === 'histedit') { if (r.k === 'ses') openSess(r.d, r.id); else openEdit(r.id); break; }
-        if (r.k === 'item') toggleDone(r.id, r.d);
+        if (act === 'histedit') { if (r.k === 'ses') openSess(r.d, r.id); else openItemDay(r.id, r.d); break; }
+        if (r.k === 'item') clearDay(r.id, r.d);
         else { const lg = blankLog(clean(logOf(r.d))); lg.sessions = (lg.sessions || []).filter(x => x.id !== r.id); DB.saveLog(r.d, lg);
           if (act === 'histback') { const st = r.start || '18:00'; DB.saveItem({ id: uid(), type: 'study', title: tt.title + ' study', note: '', date: r.d, start: st, end: fromMin(Math.min(1439, toMin(st) + r.mins)), anytime: false, rec: { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }, active: true, color: '', testId: tt.id, classId: tt.classId || '', score: null, max: null, inWeek: true, est: r.mins }); } }
         renderSheet(); render(); toast(act === 'histback' ? 'Back on your calendar' : 'Undone'); break; }
       case 'sesnew': openSess('', ''); break;
       case 'sessave': sesSave(); break;
-      case 'sesdel': { const D = S.sheet.draft, lg = blankLog(clean(logOf(D.d))); lg.sessions = (lg.sessions || []).filter(x => x.id !== D.id); DB.saveLog(D.d, lg); S.sheet = null; renderSheet(); render(); toast('Session removed'); break; }
+      case 'sesdel': { const D = S.sheet.draft; if (D.k === 'item') { clearDay(D.key, D.d); S.sheet = null; renderSheet(); render(); toast('Time removed'); break; } const lg = blankLog(clean(logOf(D.d))); lg.sessions = (lg.sessions || []).filter(x => x.id !== D.id); DB.saveLog(D.d, lg); S.sheet = null; renderSheet(); render(); toast('Session removed'); break; }
       case 'rmsess': S.sheet.draft.sessions.splice(+t.dataset.i, 1); renderSheet(); break;
       case 'vabs': { const D = S.sheet.draft; D.absent[t.dataset.k] = !D.absent[t.dataset.k]; renderSheet(); break; }
       case 'qadd': openAddType(t.dataset.t); break;
