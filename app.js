@@ -756,20 +756,23 @@ function classStudyHTML() {
 function habitCard(it) {
   const t = todayStr(), r = it.rec || { type: 'none' }, per = r.type === 'perweek', col = colorOf(it);
   let sched = 0, done = 0, mins = 0, wk = 0, last = ''; const cells = [];
-  for (let i = 27; i >= 0; i--) {
+  const rg = S.hrange || '4w'; let span = rg === 'week' ? 7 : 28;
+  if (rg === 'life') { let first = it.date || t; Object.keys(S.logs).forEach(d => { if (d < first && (S.logs[d].done?.[it.id] || S.logs[d].mins?.[it.id])) first = d; }); span = Math.max(7, Math.min(1500, diffDays(first, t) + 1)); }
+  const wkDone = (() => { let n = 0; for (let i = 0; i < 7; i++) if (isDone(it.id, addDays(t, -i))) n++; return n; })();
+  for (let i = span - 1; i >= 0; i--) {
     const d = addDays(t, -i), dn = isDone(it.id, d), lg = logOf(d);
     const occ = d >= it.date && !per && occursOn(it, d) && !isPaused(it, d) && !isSkipped(it.id, d);
-    cells.push(dn ? 'd' : (occ && d < t) ? 'm' : occ ? 't' : 'n');
-    if (dn) { done++; sched++; mins += lg.mins?.[it.id] || 0; if (i < 7) wk++; if (!last && false) last = ''; }
+    if (i < 140) cells.push(dn ? 'd' : (occ && d < t) ? 'm' : occ ? 't' : 'n');
+    if (dn) { done++; sched++; mins += lg.mins?.[it.id] || 0; }
     else if (occ && d < t) sched++;
     { const nn = noteOf(it, d); if (nn && lg.notes?.[it.id]) last = (nn.t ? nn.t + (nn.b ? ' — ' + nn.b.split('\n')[0] : '') : nn.b); }
   }
   const st = streakOf(it, t), rate = sched ? Math.round(done / sched * 100) : 0;
-  const weekTxt = per ? `${Math.min(weekDoneCount(it, t), r.times)}/${r.times}` : String(wk);
+  const weekTxt = per ? `${Math.min(weekDoneCount(it, t), r.times)}/${r.times}` : String(wkDone), rlab = rg === 'week' ? 'last 7 days' : rg === 'life' ? 'lifetime' : 'last 28 days';
   return `<div class="pcard" data-act="open" data-id="${it.id}">
     <div class="ph"><div><b>${esc(it.title)}</b><span>${esc(recSummary(it))} · ~${fmtHrs(it.est || 30)}</span></div><div class="pbig" style="color:${col}">${st.n ? '🔥 ' + st.n + st.unit : '–'}</div></div>
-    <div class="hheat" style="--c:${col}">${cells.map(c => `<i class="${c}"></i>`).join('')}</div>
-    <div class="pstats"><div><b>${weekTxt}</b><span>this week</span></div><div><b>${rate}%</b><span>last 28 days</span></div><div><b>${mins ? fmtHrs(mins) : done}</b><span>${mins ? 'logged' : 'done'}</span></div></div>
+    <div class="hheat ${rg === 'week' ? 'wk7' : ''}" style="--c:${col};${rg === 'week' ? '' : ''}">${cells.map(c => `<i class="${c}"></i>`).join('')}</div>
+    <div class="pstats"><div><b>${weekTxt}</b><span>this week</span></div><div><b>${rate}%</b><span>${rlab}</span></div><div><b>${mins ? fmtHrs(mins) : done}</b><span>${mins ? 'logged' : 'done'}</span></div></div>
     ${last ? `<p class="hnote">📝 ${esc(last)}</p>` : ''}</div>`;
 }
 function progressHTML() {
@@ -794,7 +797,7 @@ function progressHTML() {
       <div class="pbig" ${has ? '' : 'style="color:var(--accent);font-size:15px"'}>${has ? pct(x) + '%' : 'Add score'}</div></div>${stats(x)}</div>`;
   };
   const habits = S.items.filter(i => i.type === 'habit' && i.active !== false);
-  const habitSec = habits.length ? `<div class="sec-title">Habits · last 4 weeks</div>${habits.map(habitCard).join('')}` : '';
+  const habitSec = habits.length ? `<div class="sec-title">Habits</div><div class="seg" style="margin:0 0 10px">${[['week', 'Last week'], ['4w', 'Last 4 weeks'], ['life', 'Lifetime']].map(([k, l]) => `<button class="${(S.hrange || '4w') === k ? 'on' : ''}" data-act="hrange" data-v="${k}">${l}</button>`).join('')}</div>${habits.map(habitCard).join('')}` : '';
   if (!tests.length) return `${bannerHTML()}${habitSec}<p class="hint" style="margin-top:20px">${habits.length ? '' : 'Add a habit like Workout to track it here. '}No tests yet. Tap + → Test to add one, then tie study blocks to it with “For test”. This tab will show sessions, hours and days studied next to each score.</p>`;
   return `${bannerHTML()}${habitSec}
     <div class="card streakcard"><div><b>${tests.length}</b><span>tests</span></div><div><b>${avg != null ? avg + '%' : '–'}</b><span>avg score</span></div><div><b>${fmtHrs(totalMins)}</b><span>studied</span></div></div>
@@ -1352,6 +1355,7 @@ document.addEventListener('click', e => {
       case 'delsess': openSess(t.dataset.d, id); break;
       case 'histadd': { const tt = S.items.find(x => x.id === S.sheet.tid); openSess('', ''); S.sheet.draft.classId = tt?.classId || ''; S.sheet.draft.date = todayStr(); renderSheet(); break; }
       case 'itemday': { const D = S.sheet.draft; openItemDay(D.id, S.date); break; }
+      case 'hrange': S.hrange = t.dataset.v; render(); break;
       case 'sthist': S.sheet = { kind: 'hist', tid: id }; renderSheet(); break;
       case 'histedit': case 'histundo': case 'histback': {
         const hi = +t.dataset.i, tt = S.items.find(x => x.id === S.sheet.tid), r = tt && histRows(tt)[hi]; if (!r) break;
