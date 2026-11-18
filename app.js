@@ -230,6 +230,7 @@ const Local = {
       S.items = d.items || []; S.logs = d.logs || {};
       Object.assign(S.settings, d.settings || {});
     } catch { /* ignore */ }
+    setTimeout(autoImport, 0);
   },
   persist() { localStorage.setItem('planit', JSON.stringify({ items: S.items, logs: S.logs, settings: S.settings })); },
 };
@@ -279,9 +280,9 @@ const Cloud = {
   sync() {
     this.stop();
     const { F: fs, db } = this, uid_ = S.user.uid;
-    this.unsubs.push(fs.onSnapshot(fs.collection(db, 'users', uid_, 'items'), snap => { S.items = snap.docs.map(d => d.data()); render(); }));
-    this.unsubs.push(fs.onSnapshot(fs.collection(db, 'users', uid_, 'logs'), snap => { S.logs = {}; snap.docs.forEach(d => { S.logs[d.id] = d.data(); }); render(); }));
-    this.unsubs.push(fs.onSnapshot(fs.doc(db, 'users', uid_, 'meta', 'settings'), snap => { if (snap.exists()) { Object.assign(S.settings, snap.data()); } render(); }));
+    this.unsubs.push(fs.onSnapshot(fs.collection(db, 'users', uid_, 'items'), snap => { S.items = snap.docs.map(d => d.data()); render(); markLoaded('i'); }));
+    this.unsubs.push(fs.onSnapshot(fs.collection(db, 'users', uid_, 'logs'), snap => { S.logs = {}; snap.docs.forEach(d => { S.logs[d.id] = d.data(); }); render(); markLoaded('l'); }));
+    this.unsubs.push(fs.onSnapshot(fs.doc(db, 'users', uid_, 'meta', 'settings'), snap => { if (snap.exists()) { Object.assign(S.settings, snap.data()); } render(); markLoaded('s'); }));
     ensureGcal();
   },
   saveItem(it) { const { F: fs, db } = this; fs.setDoc(fs.doc(db, 'users', S.user.uid, 'items', it.id), clean(it)).catch(e => toast(e.message)); },
@@ -1021,6 +1022,30 @@ function itemSheetHTML() {
     </div></div>`;
 }
 
+/* one-time import of past Tally tests + study totals (dates inside each test are estimated; edit them from Progress) */
+const TALLY = [
+  { cls: 'Physical Biochemistry 5721', color: '#d93f2b', title: 'Unit 3: Kinetics', date: '2026-10-23', mins: 345, days: 3, sess: 4 },
+  { cls: 'Biochemistry 5614', color: '#3b82b8', title: 'Exam 2', date: '2026-10-21', mins: 915, days: 5, sess: 8 },
+  { cls: 'Geography 2400.02', color: '#7cb342', title: 'Midterm 1', date: '2026-10-08', mins: 73, days: 1, sess: 1, score: 100, max: 100 },
+];
+const autoImport = () => { if (S.settings.tallyImported || S._tallyRan) return; S._tallyRan = true; importTally(); };
+const markLoaded = k => { (S._ld ||= new Set()).add(k); if (S._ld.size >= 3) autoImport(); };
+function importTally() {
+  const cls = S.settings.classes || [];
+  TALLY.forEach(t => {
+    const num = t.cls.split(' ').pop(); let c = cls.find(x => x.name.includes(num));
+    if (!c) { c = { id: uid(), name: t.cls, color: t.color }; cls.push(c); }
+    if (S.items.some(x => x.type === 'test' && x.title === t.title && x.date === t.date)) return;
+    const tid = uid();
+    DB.saveItem({ id: tid, type: 'test', title: t.title, note: '', date: t.date, start: '', end: '', anytime: true, rec: { type: 'none', days: [], every: 1, unit: 'day', dom: 1, times: 3 }, active: true, color: '', testId: '', classId: c.id, score: t.score ?? null, max: t.max ?? 100, inWeek: true });
+    const per = Array.from({ length: t.sess }, (_, i) => Math.floor(t.mins / t.sess) + (i < t.mins % t.sess ? 1 : 0));
+    per.forEach((m, i) => {
+      const day = addDays(t.date, -1 - (i % t.days)), lg = blankLog(clean(logOf(day))); lg.sessions ||= [];
+      lg.sessions.push({ id: uid(), classId: c.id, mins: m, start: fromMin(18 * 60 + Math.floor(i / t.days) * 120), note: 'Imported from Tally' }); DB.saveLog(day, lg);
+    });
+  });
+  S.settings.classes = cls; S.settings.tallyImported = true; DB.saveSettings(); render();
+}
 function settingsSheetHTML() {
   const cloud = S.mode === 'cloud';
   const hours = (sel, from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i).map(h => `<option value="${h}" ${h === sel ? 'selected' : ''}>${fmtT(h * 60)}</option>`).join('');
