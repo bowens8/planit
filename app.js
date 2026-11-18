@@ -691,13 +691,18 @@ function monthHTML() {
     <p class="hint" style="margin-top:12px"><span class="mchip done" style="display:inline-block;padding:1px 7px">done</span> <span class="mchip" style="display:inline-block;padding:1px 7px">goal</span> &nbsp;<span style="color:var(--event)">●</span> events &nbsp;<span style="color:var(--study)">●</span> study &nbsp;<span style="color:var(--test,#ef4444)">●</span> test</p>`;
 }
 
-function testStats(t) {
+const RNG = { week: 'last week', '4w': 'last 4 weeks', life: 'lifetime' };
+const rngFrom = () => { const r = S.hrange || '4w'; return r === 'life' ? '' : addDays(todayStr(), r === 'week' ? -6 : -27); };
+const rngTitle = base => `<div class="sec-title rngt" data-act="hrange">${base} · ${RNG[S.hrange || '4w']} <i>▾</i></div>`;
+function testStats(t, ranged) {
+  const from = ranged ? rngFrom() : '';
   const studies = S.items.filter(i => i.type === 'study' && i.testId === t.id);
   let done = 0, planned = 0, mins = 0; const days = new Set();
   if (studies.length) {
     let start = studies.reduce((m, i) => (i.date < m ? i.date : m), t.date);
     const floor = addDays(t.date, -500); if (start < floor) start = floor;
     for (let d = start; d <= t.date; d = addDays(d, 1)) {
+      if (from && d < from) continue;
       const lg = logOf(d);
       studies.forEach(i => {
         if (!occursOn(i, d)) return;
@@ -710,11 +715,12 @@ function testStats(t) {
     }
   }
   Object.keys(S.logs).forEach(d => (S.logs[d].sessions || []).forEach(x => {
+    if (from && d < from) return;
     if (!t.classId || x.classId !== t.classId) return;
     const nxt = S.items.filter(i => i.type === 'test' && i.classId === t.classId && i.date >= d).sort((a, b) => (a.date < b.date ? -1 : 1))[0];
     if (nxt && nxt.id === t.id) { mins += x.mins; days.add(d); done++; planned++; }
   }));
-  Object.keys(S.logs).forEach(d => { const lg = S.logs[d]; new Set([...Object.keys(lg.done || {}), ...Object.keys(lg.mins || {})]).forEach(key => {
+  Object.keys(S.logs).forEach(d => { if (from && d < from) return; const lg = S.logs[d]; new Set([...Object.keys(lg.done || {}), ...Object.keys(lg.mins || {})]).forEach(key => {
     if (!key.includes('@')) return; const i = studies.find(x => x.id === key.split('@')[0]); if (!i) return;
     if (lg.done?.[key]) { done++; mins += lg.mins?.[key] || i.est || 0; days.add(d); } else if (lg.mins?.[key]) { mins += lg.mins[key]; days.add(d); }
   }); });
@@ -722,7 +728,7 @@ function testStats(t) {
   S.items.filter(a => a.type === 'assignment' && a.studyCount && a.done).forEach(a => {
     const tgt = a.testId ? S.items.find(x => x.id === a.testId) : S.items.filter(x => x.type === 'test' && x.classId && x.classId === a.classId && x.date >= a.date).sort((x, y) => (x.date < y.date ? -1 : 1))[0];
     if (!tgt || tgt.id !== t.id) return;
-    const ss = sessionsOf(a); done++; planned++;
+    const ss = sessionsOf(a).filter(x => !from || x.d >= from); if (ss.length ? false : (from && a.date < from)) return; done++; planned++;
     if (ss.length) ss.forEach(x => { mins += sessMins(a, x); days.add(x.d); }); else { mins += a.est || 60; days.add(a.date); }
   });
   return { done, planned, mins, days: days.size };
@@ -782,7 +788,7 @@ function progressHTML() {
   const scored = tests.filter(x => x.score != null && x.score !== '');
   const pct = x => Math.round(x.score / (x.max || 100) * 100);
   const avg = scored.length ? Math.round(scored.reduce((a, x) => a + pct(x), 0) / scored.length) : null;
-  const totalMins = tests.reduce((a, x) => a + testStats(x).mins, 0);
+  const totalMins = tests.reduce((a, x) => a + testStats(x, true).mins, 0);
   const stats = x => { const st = testStats(x); return `<div class="pstats" data-act="sthist" data-id="${x.id}"><div><b>${st.done}${st.planned ? `/${st.planned}` : ''}</b><span>sessions</span></div><div><b>${fmtHrs(st.mins)}</b><span>studied</span></div><div><b>${st.days}</b><span>days</span></div></div>`; };
   const upCard = x => {
     const st = testStats(x), w = st.planned ? Math.min(100, Math.round(st.done / st.planned * 100)) : 0;
@@ -797,10 +803,10 @@ function progressHTML() {
       <div class="pbig" ${has ? '' : 'style="color:var(--accent);font-size:15px"'}>${has ? pct(x) + '%' : 'Add score'}</div></div>${stats(x)}</div>`;
   };
   const habits = S.items.filter(i => i.type === 'habit' && i.active !== false);
-  const habitSec = habits.length ? `<div class="sec-title">Habits</div><div class="seg" style="margin:0 0 10px">${[['week', 'Last week'], ['4w', 'Last 4 weeks'], ['life', 'Lifetime']].map(([k, l]) => `<button class="${(S.hrange || '4w') === k ? 'on' : ''}" data-act="hrange" data-v="${k}">${l}</button>`).join('')}</div>${habits.map(habitCard).join('')}` : '';
+  const habitSec = habits.length ? `${rngTitle('Habits')}${habits.map(habitCard).join('')}` : '';
   if (!tests.length) return `${bannerHTML()}${habitSec}<p class="hint" style="margin-top:20px">${habits.length ? '' : 'Add a habit like Workout to track it here. '}No tests yet. Tap + → Test to add one, then tie study blocks to it with “For test”. This tab will show sessions, hours and days studied next to each score.</p>`;
   return `${bannerHTML()}${habitSec}
-    <div class="card streakcard"><div><b>${tests.length}</b><span>tests</span></div><div><b>${avg != null ? avg + '%' : '–'}</b><span>avg score</span></div><div><b>${fmtHrs(totalMins)}</b><span>studied</span></div></div>
+    ${rngTitle('Studying')}<div class="card streakcard"><div><b>${tests.length}</b><span>tests</span></div><div><b>${avg != null ? avg + '%' : '–'}</b><span>avg score</span></div><div><b>${fmtHrs(totalMins)}</b><span>studied</span></div></div>
     ${up.length ? `<div class="sec-title">Upcoming</div>${up.map(upCard).join('')}` : ''}
     ${past.length ? `<div class="sec-title">Past</div>${past.map(pastCard).join('')}` : ''}
     `;
@@ -1355,7 +1361,7 @@ document.addEventListener('click', e => {
       case 'delsess': openSess(t.dataset.d, id); break;
       case 'histadd': { const tt = S.items.find(x => x.id === S.sheet.tid); openSess('', ''); S.sheet.draft.classId = tt?.classId || ''; S.sheet.draft.date = todayStr(); renderSheet(); break; }
       case 'itemday': { const D = S.sheet.draft; openItemDay(D.id, S.date); break; }
-      case 'hrange': S.hrange = t.dataset.v; render(); break;
+      case 'hrange': { const o = ['week', '4w', 'life']; S.hrange = o[(o.indexOf(S.hrange || '4w') + 1) % 3]; render(); break; }
       case 'sthist': S.sheet = { kind: 'hist', tid: id }; renderSheet(); break;
       case 'histedit': case 'histundo': case 'histback': {
         const hi = +t.dataset.i, tt = S.items.find(x => x.id === S.sheet.tid), r = tt && histRows(tt)[hi]; if (!r) break;
