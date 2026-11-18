@@ -393,3 +393,5 @@ body.dragging{overflow:hidden;-webkit-user-select:none;user-select:none}
 .row .qtplay{position:static;flex:none;margin-left:8px}
 
 .hheat.wk7{grid-template-columns:repeat(7,1fr)} .hheat.wk7 i{aspect-ratio:auto;height:16px}
+
+.rngt{cursor:pointer;-webkit-tap-highlight-color:transparent} .rngt i{font-style:normal;font-size:10px}
